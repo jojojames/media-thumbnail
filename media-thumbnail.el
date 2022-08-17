@@ -80,7 +80,7 @@
 (defun media-thumbnail-get-cache-path (file)
   "Returns the cached image path for FILE."
   (format "%s%s.jpg" (expand-file-name media-thumbnail-cache-dir)
-          (media-thumbnail--basefile-with-extension file)))
+          (file-name-base file)))
 
 (defun media-thumbnail-ffmpegthumbnailer-cmd (file)
   "Returns a command that generates a thumbnail for FILE."
@@ -151,23 +151,6 @@
                 (when image
                   (insert-image image " "))))))
         (forward-line 1)))))
-
-;;
-;; (@* "Util" )
-;;
-
-(defun media-thumbnail--basefile-with-extension (file)
-  "Return base filename with extension given FILE.
-
-: ~/a/b.json -> b.json
-
-If there is no extension, just return the base file name."
-  (let ((base (file-name-base file))
-        (ext (file-name-extension file)))
-    (if (and base ext)
-        (format "%s.%s" base ext)
-      base)))
-
 
 ;;
 ;; (@* "User Facing" )
