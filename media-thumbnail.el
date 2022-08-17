@@ -53,7 +53,7 @@
   :type 'string
   :group 'media-thumbnail)
 
-(defcustom media-thumbnail-image-width 128
+(defcustom media-thumbnail-image-width 150
   "Width of images."
   :type 'float
   :group 'media-thumbnail)
