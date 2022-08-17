@@ -104,7 +104,7 @@
   (unless (file-exists-p media-thumbnail-cache-dir)
     (make-directory media-thumbnail-cache-dir))
   (cond
-   ((string-match-p "^._" (file-name-base file)) nil)
+   ((string-match-p "^\\._" (file-name-base file)) nil)
    ((not (file-name-extension file)) nil)
    ((member (downcase (file-name-extension file))
             media-thumbnail-video-exts)
