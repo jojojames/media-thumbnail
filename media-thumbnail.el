@@ -68,6 +68,15 @@
   :type 'int
   :group 'media-thumbnail)
 
+(defcustom media-thumbnail-should-hide-details-fn
+  #'media-thumbnail-hide-in-some-media-directories
+  "Function used to determine whether or not to call `dired-hide-details-mode'."
+  :type `(choice
+          (const :tag "Default"
+                 ,#'media-thumbnail-hide-in-some-media-directories)
+          (function :tag "Custom function"))
+  :group 'media-thumbnail)
+
 ;;
 ;; (@* "Variables" )
 ;;
@@ -166,6 +175,23 @@
     (message "Deleting %s directory." media-thumbnail-cache-dir)
     (delete-directory media-thumbnail-cache-dir t t)))
 
+(defun media-thumbnail-hide-in-some-media-directories ()
+  "Determine if we're looking at a media directory."
+  (when default-directory
+    (let ((f (downcase (file-name-directory default-directory))))
+      (and
+       (or
+        (string-match-p "videos" f)
+        (string-match-p "pictures" f)
+        (string-match-p "photos" f))
+       (cl-find-if (lambda (x)
+                     (or
+                      (member
+                       (file-name-extension x) media-thumbnail-video-exts)
+                      (member
+                       (file-name-extension x) media-thumbnail-image-exts)))
+                   (directory-files default-directory))))))
+
 ;;
 ;; (@* "Minor Mode" )
 ;;
@@ -183,10 +209,14 @@ See the command \\[hungry-electric-delete]."
   :lighter " Media Thumbnails"
   (if media-thumbnail-mode
       (progn
+        (when (funcall media-thumbnail-should-hide-details-fn)
+          (dired-hide-details-mode +1))
         (setq-local media-thumbnail--timer
                     (run-with-timer 0 0.25 #'media-thumbnail--convert))
         (add-hook 'dired-after-readin-hook
                   'media-thumbnail--dired-display :append :local))
+    (when (funcall media-thumbnail-should-hide-details-fn)
+      (dired-hide-details-mode -1))
     (setq-local media-thumbnail--timer nil)
     (remove-hook 'dired-after-readin-hook
                  'media-thumbnail--dired-display :local)))
