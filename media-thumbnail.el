@@ -73,13 +73,15 @@
 ;; (@* "Variables" )
 ;;
 
-(defvar media-thumbnail-handled-files '())
-(defvar media-thumbnail-queue '())
+(defvar media-thumbnail--handled-files '()
+  "Files already processedby `media-thumbnail'.")
+(defvar media-thumbnail--queue '()
+  "To be processed by `media-thumbnail'.")
 
 (defun media-thumbnail-get-cache-path (file)
-  "Returns the cached image thumbnail for FILE."
+  "Returns the cached image path for FILE."
   (format "%s%s.jpg" (expand-file-name media-thumbnail-cache-dir)
-          (media-thumbnail-basefile-with-extension file)))
+          (media-thumbnail--basefile-with-extension file)))
 
 (defun media-thumbnail-ffmpegthumbnailer-cmd (file)
   "Returns a command that generates a thumbnail for FILE."
@@ -102,21 +104,20 @@
   "Returns image spec for FILE."
   (unless (file-exists-p media-thumbnail-cache-dir)
     (make-directory media-thumbnail-cache-dir))
-  (when (and (member (file-name-extension file) '("mkv" "mp4" "flv" "MP4"))
-             (not (string-match-p "^._" (file-name-base file))))
-    (if (file-exists-p (media-thumbnail-get-cache-path file))
-        (media-thumbnail-create-image (media-thumbnail-get-cache-path file))
-      (if (member file media-thumbnail-handled-files)
-          ;; nil
-          (media-thumbnail-create-image (media-thumbnail-get-cache-path file))
-        (push file media-thumbnail-handled-files)
-        (let ((command
-               (media-thumbnail-ffmpegthumbnailer-cmd file)))
-          (add-to-list 'media-thumbnail-queue command :append)
-          ;; nil
-          (media-thumbnail-create-image (media-thumbnail-get-cache-path file)))))))
+  (cond
+   ((string-match-p "^._" (file-name-base file)) nil)
+   ((not (file-name-extension file)) nil)
+   ((member (downcase (file-name-extension file))
+            media-thumbnail-video-exts)
+    (unless (or (member file media-thumbnail--handled-files)
+                (file-exists-p (media-thumbnail-get-cache-path file)))
+      (push file media-thumbnail--handled-files)
+      (let ((command (media-thumbnail-ffmpegthumbnailer-cmd file)))
+        (add-to-list 'media-thumbnail--queue command :append)))
+    (media-thumbnail--create-image (media-thumbnail-get-cache-path file)))
+   (:default nil)))
 
-(defun media-thumbnail-create-image (filename)
+(defun media-thumbnail--create-image (filename)
   "Helper method to create and return an image given FILENAME."
   (create-image filename 'jpeg nil
                 :scale media-thumbnail-image-scale
@@ -124,50 +125,18 @@
                 :ascent 'center))
 
 (defun media-thumbnail--convert ()
-  "Pop and run tasks in `media-thumbnail-queue'."
-  (when (and media-thumbnail-queue
+  "Pop and run tasks in `media-thumbnail--queue'."
+  (when (and media-thumbnail--queue
              (< (length (process-list))
                 media-thumbnail-max-processes))
-    (let ((command (pop media-thumbnail-queue)))
-      (call-process-shell-command command nil 0)
+    (let ((command (pop media-thumbnail--queue)))
       ;; (message "Calling: %s" command)
-      )))
-
-(setq media-thumbnail--timer
-      (run-with-timer 0 0.25 #'media-thumbnail--convert))
-
-
-(defun media-thumbnail-clear-all ()
-  ""
-  (interactive)
-  (setq media-thumbnail-queue nil)
-  (setq media-thumbnail-handled-files nil)
-  (setq dired-update--timer nil)
-  (delete-directory media-thumbnail-cache-dir t t))
+      (call-process-shell-command command nil 0))))
 ;;
 ;; (@* "Dired" )
 ;;
 
-;; (advice-add 'media-thumbnail--convert :after 'media-thumbnail-set-up-timer)
-
-(defvar dired-update--timer nil)
-
-(defun media-thumbnail-set-up-timer ()
-  (unless dired-update--timer
-    (setq dired-update--timer
-          (run-with-idle-timer 2 nil 'media-thumbnail-dired-update))))
-
-(defun media-thumbnail-dired-update ()
-  (dolist (buffer (buffer-list))
-    (with-current-buffer buffer
-      (when (derived-mode-p 'dired-mode)
-        (dired-revert))))
-  (setq dired-update--timer nil))
-
-(add-hook 'dired-after-readin-hook
-          'media-thumbnail-dired-display :append)
-
-(defun media-thumbnail-dired-display ()
+(defun media-thumbnail--dired-display ()
   "Display the icons of files in a dired buffer."
   (interactive)
   (let ((inhibit-read-only t))
@@ -188,7 +157,7 @@
 ;; (@* "Util" )
 ;;
 
-(defun media-thumbnail-basefile-with-extension (file)
+(defun media-thumbnail--basefile-with-extension (file)
   "Return base filename with extension given FILE.
 
 : ~/a/b.json -> b.json
@@ -199,6 +168,46 @@ If there is no extension, just return the base file name."
     (if (and base ext)
         (format "%s.%s" base ext)
       base)))
+
+
+;;
+;; (@* "User Facing" )
+;;
+
+(defun media-thumbnail-clear-all ()
+  "Reset everything related to `media-thumbnail'."
+  (interactive)
+  (message "Clearing `media-thumbnail'...")
+  (setq media-thumbnail--queue nil)
+  (setq media-thumbnail--handled-files nil)
+  (when (file-exists-p media-thumbnail-cache-dir)
+    (message "Deleting %s directory." media-thumbnail-cache-dir)
+    (delete-directory media-thumbnail-cache-dir t t)))
+
+;;
+;; (@* "Minor Mode" )
+;;
+
+(define-minor-mode media-thumbnail-mode
+  "Toggle `media-thumbnail-mode'.
+Interactively with no argument, this command toggles the mode.
+A positive prefix argument enables the mode, any other prefix
+argument disables it.  From Lisp, argument omitted or nil enables
+the mode, `toggle' toggles the state.
+
+When Hungry mode is enabled, the control delete key
+gobbles all preceding whitespace except the last.
+See the command \\[hungry-electric-delete]."
+  :lighter " Media Thumbnails"
+  (if media-thumbnail-mode
+      (progn
+        (setq-local media-thumbnail--timer
+                    (run-with-timer 0 0.25 #'media-thumbnail--convert))
+        (add-hook 'dired-after-readin-hook
+                  'media-thumbnail--dired-display :append :local))
+    (setq-local media-thumbnail--timer nil)
+    (remove-hook 'dired-after-readin-hook
+                 'media-thumbnail--dired-display :local)))
 
 (provide 'media-thumbnail)
 ;;; media-thumbnail.el ends here
