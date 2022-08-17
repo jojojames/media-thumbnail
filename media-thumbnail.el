@@ -91,6 +91,25 @@
           (function :tag "Custom function"))
   :group 'media-thumbnail)
 
+(defcustom media-thumbnail-special-refresh-commands
+  '(dired-do-delete
+    dired-do-rename
+    dired-do-copy
+    dired-do-flagged-delete
+    dired-create-directory
+    (delete-file . 2)
+    (save-buffer . 2)
+    magit-format-patch)
+  "A list of commands that will trigger a refresh of `dired'.
+
+The command can be an alist with the CDR of the alist being the amount of time
+to wait to refresh the sidebar after the CAR of the alist is called.
+
+Set this to nil or set `media-thumbnail-special-refresh-commands' to nil
+to disable automatic refresh when a special command is triggered."
+  :type 'list
+  :group 'media-thumbnail)
+
 ;;
 ;; (@* "Variables" )
 ;;
@@ -191,7 +210,7 @@
          media-thumbnail--redisplay-timer
          (run-with-timer 3 nil 'media-thumbnail--redisplay))))))
 
-(defun media-thumbnail--redisplay ()
+(defun media-thumbnail--redisplay (&rest _)
   "Call `redisplay' and reset `media-thumbnail--redisplay-timer'."
   (media-thumbnail--log "Calling redisplay!")
   (while media-thumbnail--specs-to-flush
@@ -272,12 +291,53 @@
         (setq-local media-thumbnail--timer
                     (run-with-timer 0 0.25 #'media-thumbnail--convert))
         (add-hook 'dired-after-readin-hook
-                  'media-thumbnail-dired--display :append :local))
+                  'media-thumbnail-dired--display :append :local)
+        (mapc
+         (lambda (x)
+           (if (consp x)
+               (let ((command (car x))
+                     (delay (cdr x)))
+                 (advice-add
+                  command
+                  :after
+                  (defalias (intern
+                             (format "media-thumbnail-refresh-after-%S"
+                                     command))
+                    (function
+                     (lambda (&rest _)
+                       (let ((timer-symbol
+                              (intern
+                               (format
+                                "media-thumbnail-refresh-%S-timer" command))))
+                         (when (and (boundp timer-symbol)
+                                    (timerp (symbol-value timer-symbol)))
+                           (cancel-timer (symbol-value timer-symbol)))
+                         (setf
+                          (symbol-value timer-symbol)
+                          (run-with-idle-timer
+                           delay
+                           nil
+                           #'media-thumbnail--redisplay))))))))
+             (advice-add x :after #'media-thumbnail--redisplay)))
+         media-thumbnail-special-refresh-commands))
     (when (funcall media-thumbnail-dired-should-hide-details-fn)
       (dired-hide-details-mode -1))
     (setq-local media-thumbnail--timer nil)
     (remove-hook 'dired-after-readin-hook
-                 'media-thumbnail-dired--display :local)))
+                 'media-thumbnail-dired--display :local)
+    (mapc
+     (lambda (x)
+       (if (consp x)
+           (let ((command (car x))
+                 (delay (cdr x)))
+             (advice-remove
+              command
+              :after
+              (intern
+               (format "media-thumbnail-refresh-after-%S"
+                       command))))
+         (advice-remove x 'media-thumbnail--redisplay)))
+     media-thumbnail-special-refresh-commands)))
 
 (provide 'media-thumbnail)
 ;;; media-thumbnail.el ends here
