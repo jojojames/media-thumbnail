@@ -131,9 +131,10 @@
 (defun media-thumbnail-clear-all ()
   ""
   (interactive)
+  (setq media-thumbnail-queue nil)
   (setq media-thumbnail-handled-files nil)
   (setq dired-update--timer nil)
-  (delete-directory media-thumbnail-cache-dir t))
+  (delete-directory media-thumbnail-cache-dir t t))
 ;;
 ;; (@* "Dired" )
 ;;
