@@ -114,10 +114,9 @@
    `("ffmpegthumbnailer"
      "-m"
      "-i"
-     ,(format "\'%s\'" file)
+     ,(shell-quote-argument file)
      "-o"
-     ,(format "\'%s\'"
-              (media-thumbnail-get-cache-path file))
+     ,(shell-quote-argument (media-thumbnail-get-cache-path file))
      "-q" "10" ;; Max quality for jpeg
      ;; "-a" ;; Ignore aspect ratio
      "-s"
