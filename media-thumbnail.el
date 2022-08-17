@@ -97,10 +97,19 @@
 
 (defvar media-thumbnail--handled-files '()
   "Files already processed by `media-thumbnail'.")
+
 (defvar media-thumbnail--queue '()
   "To be processed by `media-thumbnail'.")
+
+(defvar-local media-thumbnail--redisplay-timer nil
+  "Timer used after converting for redisplay.")
+
 (defvar-local media-thumbnail--specs-to-flush nil
   "Image specs to flush to refresh images upon convert finish.")
+
+;;
+;; (@* "Implementation" )
+;;
 
 (defun media-thumbnail-get-cache-path (file)
   "Returns the cached image path for FILE."
@@ -181,9 +190,6 @@
         (setq-local
          media-thumbnail--redisplay-timer
          (run-with-timer 3 nil 'media-thumbnail--redisplay))))))
-
-(defvar-local media-thumbnail--redisplay-timer nil
-  "Timer used after converting for redisplay.")
 
 (defun media-thumbnail--redisplay ()
   "Call `redisplay' and reset `media-thumbnail--redisplay-timer'."
