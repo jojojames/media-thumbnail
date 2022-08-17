@@ -223,7 +223,7 @@
 
 (define-minor-mode media-thumbnail-dired-mode
   "Toggle `media-thumbnail-dired-mode'."
-  :lighter " Media Thumbnails"
+  :lighter " Dired-Thumbnails"
   (if media-thumbnail-dired-mode
       (progn
         (when (funcall media-thumbnail-dired-should-hide-details-fn)
