@@ -53,8 +53,8 @@
   :type 'string
   :group 'media-thumbnail)
 
-(defcustom media-thumbnail-image-scale 1
-  "How much to scale images when creating them."
+(defcustom media-thumbnail-image-width 128
+  "Width of images."
   :type 'float
   :group 'media-thumbnail)
 
@@ -129,10 +129,15 @@
 
 (defun media-thumbnail--create-image (filename)
   "Helper method to create and return an image given FILENAME."
-  (create-image filename 'jpeg nil
-                :scale media-thumbnail-image-scale
-                :margin media-thumbnail-image-margin
-                :ascent 'center))
+  (if (equal (file-name-extension filename) "png")
+      (create-image filename 'png nil
+                    :width media-thumbnail-image-width
+                    :margin media-thumbnail-image-margin
+                    :ascent 'center)
+    (create-image filename 'jpeg nil
+                  :width media-thumbnail-image-width
+                  :margin media-thumbnail-image-margin
+                  :ascent 'center)))
 
 (defun media-thumbnail--convert ()
   "Pop and run tasks in `media-thumbnail--queue'."
