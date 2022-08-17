@@ -202,7 +202,10 @@
       (image-flush image-spec))
     (setq-local media-thumbnail--specs-to-flush
                 (cdr media-thumbnail--specs-to-flush)))
-  (dired-do-redisplay)
+  ;; Might have to loop through the modes instead?
+  ;; Otherwise, this doesn't update if we're not on the buffer.
+  (when (derived-mode-p 'dired-mode)
+    (dired-do-redisplay))
   (setq-local media-thumbnail--redisplay-timer nil))
 
 ;;
