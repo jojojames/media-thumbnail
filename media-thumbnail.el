@@ -99,8 +99,6 @@
   "Files already processed by `media-thumbnail'.")
 (defvar media-thumbnail--queue '()
   "To be processed by `media-thumbnail'.")
-(defvar-local media-thumbnail--inserted-files '()
-  "Files that already has an image inserted.")
 
 (defun media-thumbnail-get-cache-path (file)
   "Returns the cached image path for FILE."
