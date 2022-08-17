@@ -224,7 +224,13 @@ to disable automatic refresh when a special command is triggered."
   ;; Might have to loop through the modes instead?
   ;; Otherwise, this doesn't update if we're not on the buffer.
   (when (derived-mode-p 'dired-mode)
-    (dired-do-redisplay))
+    ;; When deleting/moving at the end of the buffer, `dired-do-redisplay'
+    ;; doesn't clean up the extraneous thumbnail.
+    (if (eobp)
+        (save-mark-and-excursion
+          (forward-line -1)
+          (dired-do-redisplay))
+      (dired-do-redisplay)))
   (setq-local media-thumbnail--redisplay-timer nil))
 
 ;;
