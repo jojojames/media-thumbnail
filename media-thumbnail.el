@@ -73,7 +73,7 @@
 ;;
 
 (defvar media-thumbnail--handled-files '()
-  "Files already processedby `media-thumbnail'.")
+  "Files already processed by `media-thumbnail'.")
 (defvar media-thumbnail--queue '()
   "To be processed by `media-thumbnail'.")
 
