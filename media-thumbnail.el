@@ -99,12 +99,14 @@
     (if (file-exists-p (media-thumbnail-get-cache-path file))
         (media-thumbnail-create-image (media-thumbnail-get-cache-path file))
       (if (member file media-thumbnail-handled-files)
-          nil
+          ;; nil
+          (media-thumbnail-create-image (media-thumbnail-get-cache-path file))
         (push file media-thumbnail-handled-files)
         (let ((command
                (media-thumbnail-ffmpegthumbnailer-cmd file)))
           (add-to-list 'media-thumbnail-queue command :append)
-          nil)))))
+          ;; nil
+          (media-thumbnail-create-image (media-thumbnail-get-cache-path file)))))))
 
 (defun media-thumbnail-create-image (filename)
   "Helper method to create and return an image given FILENAME."
@@ -119,7 +121,8 @@
                 media-thumbnail-max-processes))
     (let ((command (pop media-thumbnail-queue)))
       (call-process-shell-command command nil 0)
-      (message "Calling: %s" command))))
+      ;; (message "Calling: %s" command)
+      )))
 
 (setq media-thumbnail--timer
       (run-with-timer 0 0.25 #'media-thumbnail--convert))
@@ -135,7 +138,7 @@
 ;; (@* "Dired" )
 ;;
 
-(advice-add 'media-thumbnail--convert :after 'media-thumbnail-set-up-timer)
+;; (advice-add 'media-thumbnail--convert :after 'media-thumbnail-set-up-timer)
 
 (defvar dired-update--timer nil)
 
