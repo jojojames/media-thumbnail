@@ -204,22 +204,18 @@
 (defun media-thumbnail-dired--display ()
   "Display the icons of files in a dired buffer."
   (interactive)
+  (remove-images (point-min) (point-max))
   (let ((inhibit-read-only t))
     (save-excursion
       (goto-char (point-min))
       (while (not (eobp))
         (when (dired-move-to-filename nil)
           (dired-move-to-filename)
-          (let ((file (dired-get-filename 'verbatim t)))
-            (unless (or (member file '("." ".."))
-                        (member file media-thumbnail--inserted-files))
-              (let* ((filename (dired-get-filename nil t))
-                     (image (media-thumbnail-for-file filename)))
-                (when image
-                  (push file media-thumbnail--inserted-files)
-                  (insert-image image " "))))))
+          (unless (member (dired-get-filename 'verbatim t) '("." ".."))
+            (let ((filename (dired-get-filename nil t)))
+              (when-let ((image (media-thumbnail-for-file filename)))
+                (put-image image (point))))))
         (forward-line 1)))))
-
 
 (define-minor-mode media-thumbnail-dired-mode
   "Toggle `media-thumbnail-dired-mode'."
