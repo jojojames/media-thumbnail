@@ -50,22 +50,22 @@
   :group 'media-thumbnail)
 
 (defcustom media-thumbnail-cache-dir "~/.emacs.d/cache/"
-  ""
+  "Where thumbnails are located."
   :type 'string
   :group 'media-thumbnail)
 
 (defcustom media-thumbnail-image-scale 1
-  ""
+  "How much to scale images when creating them."
   :type 'float
   :group 'media-thumbnail)
 
 (defcustom media-thumbnail-max-processes 20
-  ""
+  "Max number of processes to use when creating thumbnails."
   :type 'int
   :group 'media-thumbnail)
 
 (defcustom media-thumbnail-image-margin 5
-  ""
+  "Padding to add to inserted thumbnails."
   :type 'int
   :group 'media-thumbnail)
 
@@ -82,6 +82,7 @@
           (media-thumbnail-basefile-with-extension file)))
 
 (defun media-thumbnail-ffmpegthumbnailer-cmd (file)
+  "Returns a command that generates a thumbnail for FILE."
   (mapconcat
    (lambda (x) x)
    `("ffmpegthumbnailer"
@@ -98,7 +99,7 @@
    " "))
 
 (defun media-thumbnail-for-file (file)
-  ""
+  "Returns image spec for FILE."
   (unless (file-exists-p media-thumbnail-cache-dir)
     (make-directory media-thumbnail-cache-dir))
   (when (and (member (file-name-extension file) '("mkv" "mp4" "flv" "MP4"))
