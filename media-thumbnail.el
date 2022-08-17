@@ -85,6 +85,8 @@
   "Files already processed by `media-thumbnail'.")
 (defvar media-thumbnail--queue '()
   "To be processed by `media-thumbnail'.")
+(defvar-local media-thumbnail--inserted-files '()
+  "Files that already has an image inserted.")
 
 (defun media-thumbnail-get-cache-path (file)
   "Returns the cached image path for FILE."
@@ -139,7 +141,21 @@
                 media-thumbnail-max-processes))
     (let ((command (pop media-thumbnail--queue)))
       ;; (message "Calling: %s" command)
-      (call-process-shell-command command nil 0))))
+      (call-process-shell-command command nil 0)
+      (unless media-thumbnail--redisplay-timer
+        (message "Setting up redisplay!")
+        (setq-local
+         media-thumbnail--redisplay-timer
+         (run-with-timer 3 nil 'media-thumbnail--redisplay))))))
+
+(defvar-local media-thumbnail--redisplay-timer nil
+  "Timer used after converting for redisplay.")
+
+(defun media-thumbnail--redisplay ()
+  "Call `redisplay' and reset `media-thumbnail--redisplay-timer'."
+  (message "Calling redisplay!")
+  (dired-do-redisplay)
+  (setq-local media-thumbnail--redisplay-timer nil))
 ;;
 ;; (@* "Dired" )
 ;;
@@ -154,10 +170,12 @@
         (when (dired-move-to-filename nil)
           (dired-move-to-filename)
           (let ((file (dired-get-filename 'verbatim t)))
-            (unless (member file '("." ".."))
+            (unless (or (member file '("." ".."))
+                        (member file media-thumbnail--inserted-files))
               (let* ((filename (dired-get-filename nil t))
                      (image (media-thumbnail-for-file filename)))
                 (when image
+                  (push file media-thumbnail--inserted-files)
                   (insert-image image " "))))))
         (forward-line 1)))))
 
@@ -169,6 +187,7 @@
   "Reset everything related to `media-thumbnail'."
   (interactive)
   (message "Clearing `media-thumbnail'...")
+  (setq media-thumbnail--redisplay-timer nil)
   (setq media-thumbnail--queue nil)
   (setq media-thumbnail--handled-files nil)
   (when (file-exists-p media-thumbnail-cache-dir)
