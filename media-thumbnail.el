@@ -44,7 +44,7 @@
 ;; (@* "Customizations" )
 ;;
 
-(defcustom media-thumbnail-size 1000
+(defcustom media-thumbnail-size 256
   "The size of the icon when creating an icon."
   :type 'number
   :group 'media-thumbnail)
@@ -54,7 +54,7 @@
   :type 'string
   :group 'media-thumbnail)
 
-(defcustom media-thumbnail-image-scale .1
+(defcustom media-thumbnail-image-scale 1
   ""
   :type 'float
   :group 'media-thumbnail)
