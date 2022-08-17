@@ -64,6 +64,11 @@
   :type 'int
   :group 'media-thumbnail)
 
+(defcustom media-thumbnail-image-margin 5
+  ""
+  :type 'int
+  :group 'media-thumbnail)
+
 ;;
 ;; (@* "Variables" )
 ;;
@@ -112,6 +117,7 @@
   "Helper method to create and return an image given FILENAME."
   (create-image filename 'jpeg nil
                 :scale media-thumbnail-image-scale
+                :margin media-thumbnail-image-margin
                 :ascent 'center))
 
 (defun media-thumbnail--convert ()
