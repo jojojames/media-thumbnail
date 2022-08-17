@@ -16,8 +16,8 @@ Or clone / download this repository and modify your ~load-path~:
 #+end_src
 ** Emacs -Q example
 #+begin_src emacs-lisp :tangle yes
-  (add-to-list 'package-archives '("melpa" . "https://melpa.org/packages/"))
   (require 'package)
+  (add-to-list 'package-archives '("melpa" . "https://melpa.org/packages/"))
   (package-initialize)
   (package-refresh-contents)
 
