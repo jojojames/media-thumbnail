@@ -68,7 +68,7 @@
   :type 'int
   :group 'media-thumbnail)
 
-(defcustom media-thumbnail-should-hide-details-fn
+(defcustom media-thumbnail-dired-should-hide-details-fn
   #'media-thumbnail-hide-in-some-media-directories
   "Function used to determine whether or not to call `dired-hide-details-mode'."
   :type `(choice
@@ -164,28 +164,6 @@
   (message "Calling redisplay!")
   (dired-do-redisplay)
   (setq-local media-thumbnail--redisplay-timer nil))
-;;
-;; (@* "Dired" )
-;;
-
-(defun media-thumbnail--dired-display ()
-  "Display the icons of files in a dired buffer."
-  (interactive)
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (goto-char (point-min))
-      (while (not (eobp))
-        (when (dired-move-to-filename nil)
-          (dired-move-to-filename)
-          (let ((file (dired-get-filename 'verbatim t)))
-            (unless (or (member file '("." ".."))
-                        (member file media-thumbnail--inserted-files))
-              (let* ((filename (dired-get-filename nil t))
-                     (image (media-thumbnail-for-file filename)))
-                (when image
-                  (push file media-thumbnail--inserted-files)
-                  (insert-image image " "))))))
-        (forward-line 1)))))
 
 ;;
 ;; (@* "User Facing" )
@@ -220,33 +198,45 @@
                    (directory-files default-directory))))))
 
 ;;
-;; (@* "Minor Mode" )
+;; (@* "Dired" )
 ;;
 
-(define-minor-mode media-thumbnail-mode
-  "Toggle `media-thumbnail-mode'.
-Interactively with no argument, this command toggles the mode.
-A positive prefix argument enables the mode, any other prefix
-argument disables it.  From Lisp, argument omitted or nil enables
-the mode, `toggle' toggles the state.
+(defun media-thumbnail-dired--display ()
+  "Display the icons of files in a dired buffer."
+  (interactive)
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (when (dired-move-to-filename nil)
+          (dired-move-to-filename)
+          (let ((file (dired-get-filename 'verbatim t)))
+            (unless (or (member file '("." ".."))
+                        (member file media-thumbnail--inserted-files))
+              (let* ((filename (dired-get-filename nil t))
+                     (image (media-thumbnail-for-file filename)))
+                (when image
+                  (push file media-thumbnail--inserted-files)
+                  (insert-image image " "))))))
+        (forward-line 1)))))
 
-When Hungry mode is enabled, the control delete key
-gobbles all preceding whitespace except the last.
-See the command \\[hungry-electric-delete]."
+
+(define-minor-mode media-thumbnail-dired-mode
+  "Toggle `media-thumbnail-dired-mode'."
   :lighter " Media Thumbnails"
-  (if media-thumbnail-mode
+  (if media-thumbnail-dired-mode
       (progn
-        (when (funcall media-thumbnail-should-hide-details-fn)
+        (when (funcall media-thumbnail-dired-should-hide-details-fn)
           (dired-hide-details-mode +1))
         (setq-local media-thumbnail--timer
                     (run-with-timer 0 0.25 #'media-thumbnail--convert))
         (add-hook 'dired-after-readin-hook
-                  'media-thumbnail--dired-display :append :local))
-    (when (funcall media-thumbnail-should-hide-details-fn)
+                  'media-thumbnail-dired--display :append :local))
+    (when (funcall media-thumbnail-dired-should-hide-details-fn)
       (dired-hide-details-mode -1))
     (setq-local media-thumbnail--timer nil)
     (remove-hook 'dired-after-readin-hook
-                 'media-thumbnail--dired-display :local)))
+                 'media-thumbnail-dired--display :local)))
 
 (provide 'media-thumbnail)
 ;;; media-thumbnail.el ends here
