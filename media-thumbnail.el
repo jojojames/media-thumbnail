@@ -99,6 +99,8 @@
   "Files already processed by `media-thumbnail'.")
 (defvar media-thumbnail--queue '()
   "To be processed by `media-thumbnail'.")
+(defvar-local media-thumbnail--specs-to-flush nil
+  "Image specs to flush to refresh images upon convert finish.")
 
 (defun media-thumbnail-get-cache-path (file)
   "Returns the cached image path for FILE."
@@ -127,19 +129,28 @@
   (unless (file-exists-p media-thumbnail-cache-dir)
     (make-directory media-thumbnail-cache-dir))
   (cond
-   ((string-match-p "^\\._" (file-name-base file)) nil)
-   ((not (file-name-extension file)) nil)
-   ((member (downcase (file-name-extension file))
-            media-thumbnail-video-exts)
-    (unless (or (member file media-thumbnail--handled-files)
-                (file-exists-p (media-thumbnail-get-cache-path file)))
-      (push file media-thumbnail--handled-files)
-      (let ((command (media-thumbnail-ffmpegthumbnailer-cmd file)))
-        (add-to-list 'media-thumbnail--queue command :append)))
-    (media-thumbnail--create-image (media-thumbnail-get-cache-path file)))
+   ((or (string-match-p "^\\._" (file-name-base file))
+        (not (file-name-extension file)))
+    nil)
    ((member (downcase (file-name-extension file))
             media-thumbnail-image-exts)
     (media-thumbnail--create-image file))
+   ((member (downcase (file-name-extension file))
+            media-thumbnail-video-exts)
+    (let ((cache-path (media-thumbnail-get-cache-path file)))
+      (if (or (member file media-thumbnail--handled-files)
+              (file-exists-p cache-path))
+          (media-thumbnail--create-image cache-path)
+        (push file media-thumbnail--handled-files)
+        (let* ((command (media-thumbnail-ffmpegthumbnailer-cmd file))
+               (image-spec (media-thumbnail--create-image cache-path)))
+          (add-to-list 'media-thumbnail--queue
+                       `(
+                         :command ,command
+                         :image-spec ,image-spec
+                         :file ,file)
+                       :append)
+          image-spec))))
    (:default nil)))
 
 (defun media-thumbnail--create-image (filename)
@@ -159,11 +170,15 @@
   (when (and media-thumbnail--queue
              (< (length (process-list))
                 media-thumbnail-max-processes))
-    (let ((command (pop media-thumbnail--queue)))
-      ;; (message "Calling: %s" command)
+    (pcase-let* ((convert-request (pop media-thumbnail--queue))
+                 (`(:command ,command :image-spec ,image-spec :file ,file)
+                  convert-request))
+      (media-thumbnail--log
+       "-----\nCalling: %s\n %S\n-----" command image-spec)
       (call-process-shell-command command nil 0)
+      (push convert-request media-thumbnail--specs-to-flush)
       (unless media-thumbnail--redisplay-timer
-        (message "Setting up redisplay!")
+        (media-thumbnail--log "Setting up redisplay!")
         (setq-local
          media-thumbnail--redisplay-timer
          (run-with-timer 3 nil 'media-thumbnail--redisplay))))))
@@ -173,7 +188,15 @@
 
 (defun media-thumbnail--redisplay ()
   "Call `redisplay' and reset `media-thumbnail--redisplay-timer'."
-  (message "Calling redisplay!")
+  (media-thumbnail--log "Calling redisplay!")
+  (while media-thumbnail--specs-to-flush
+    (pcase-let* ((`(:command ,command :image-spec ,image-spec :file ,file)
+                  (car media-thumbnail--specs-to-flush)))
+      (media-thumbnail--log
+       "-----\nFlushing: %S\nFile: %s\n-----" image-spec file)
+      (image-flush image-spec))
+    (setq-local media-thumbnail--specs-to-flush
+                (cdr media-thumbnail--specs-to-flush)))
   (dired-do-redisplay)
   (setq-local media-thumbnail--redisplay-timer nil))
 
@@ -185,6 +208,8 @@
   "Reset everything related to `media-thumbnail'."
   (interactive)
   (message "Clearing `media-thumbnail'...")
+  (clear-image-cache)
+  (setq media-thumbnail--specs-to-flush nil)
   (setq media-thumbnail--redisplay-timer nil)
   (setq media-thumbnail--queue nil)
   (setq media-thumbnail--handled-files nil)
