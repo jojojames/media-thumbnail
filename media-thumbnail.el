@@ -125,6 +125,9 @@
       (let ((command (media-thumbnail-ffmpegthumbnailer-cmd file)))
         (add-to-list 'media-thumbnail--queue command :append)))
     (media-thumbnail--create-image (media-thumbnail-get-cache-path file)))
+   ((member (downcase (file-name-extension file))
+            media-thumbnail-image-exts)
+    (media-thumbnail--create-image file))
    (:default nil)))
 
 (defun media-thumbnail--create-image (filename)
