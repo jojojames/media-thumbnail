@@ -91,6 +91,8 @@
      "-o"
      ,(format "\"%s\""
               (media-thumbnail-get-cache-path file))
+     "-q" "10" ;; Max quality for jpeg
+     ;; "-a" ;; Ignore aspect ratio
      "-s"
      ,(number-to-string media-thumbnail-size))
    " "))
