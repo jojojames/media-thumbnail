@@ -1,0 +1,37 @@
+#+TITLE: Media Thumbnail
+#+STARTUP: noindent
+
+[[./screenshots/example.png]]
+
+* Dependencies
+#+begin_src sh :tangle yes
+brew install ffmpegthumbnailer
+#+end_src
+* Installation
+: M-x package-install RET media-thumbnail RET
+Or clone / download this repository and modify your ~load-path~:
+
+#+begin_src emacs-lisp :tangle yes
+  (add-to-list 'load-path (expand-file-name "/path/to/media-thumbnail/" user-emacs-directory))
+#+end_src
+** Emacs -Q example
+#+begin_src emacs-lisp :tangle yes
+  (add-to-list 'package-archives '("melpa" . "https://melpa.org/packages/"))
+  (require 'package)
+  (package-initialize)
+  (package-refresh-contents)
+
+  (unless (package-installed-p 'media-thumbnail)
+    (package-install 'media-thumbnail))
+#+end_src
+
+** Use-Package Example
+#+begin_src emacs-lisp :tangle yes
+(use-package media-thumbnail
+  :ensure nil
+  :diminish media-thumbnail-dired-mode
+  :straight (:type git :host github :repo "jojojames/media-thumbnail")
+  :commands (media-thumbnail-dired-mode)
+  :init
+  (add-hook 'dired-mode-hook 'media-thumbnail-dired-mode))
+#+end_src
