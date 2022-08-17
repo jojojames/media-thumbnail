@@ -33,6 +33,15 @@
 (eval-when-compile (require 'subr-x)) ; `if-let*' and `when-let*'
 
 ;;
+;; (@* "Macros" )
+;;
+
+(defmacro media-thumbnail--log (&rest args)
+  "Log message only if `media-thumbnail-log' is enabled."
+  `(when media-thumbnail-log
+     (message ,@args)))
+
+;;
 ;; (@* "Constants" )
 ;;
 
@@ -42,6 +51,11 @@
 ;;
 ;; (@* "Customizations" )
 ;;
+
+(defcustom media-thumbnail-log nil
+  "Enable debug logging."
+  :type 'boolean
+  :group 'media-thumbnail)
 
 (defcustom media-thumbnail-size 256
   "The size of the icon when creating an icon."
