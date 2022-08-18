@@ -350,7 +350,6 @@ to disable automatic refresh when a special command is triggered."
                  (delay (cdr x)))
              (advice-remove
               command
-              :after
               (intern
                (format "media-thumbnail-refresh-after-%S"
                        command))))
