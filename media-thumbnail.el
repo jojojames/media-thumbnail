@@ -161,6 +161,7 @@ to disable automatic refresh when a special command is triggered."
      ,(number-to-string media-thumbnail-size))
    " "))
 
+;;;###autoload
 (defun media-thumbnail-for-file (file)
   "Return image spec for FILE."
   (unless (file-exists-p media-thumbnail-cache-dir)
@@ -247,6 +248,7 @@ to disable automatic refresh when a special command is triggered."
 ;; (@* "User Facing" )
 ;;
 
+;;;###autoload
 (defun media-thumbnail-clear-all ()
   "Reset everything related to `media-thumbnail'."
   (interactive)
