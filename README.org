@@ -23,6 +23,7 @@ Or clone / download this repository and modify your ~load-path~:
 
   (unless (package-installed-p 'media-thumbnail)
     (package-install 'media-thumbnail))
+  (require 'media-thumbnail)
   (add-hook 'dired-mode-hook 'media-thumbnail-dired-mode)
 #+end_src
 
