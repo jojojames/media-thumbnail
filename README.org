@@ -3,9 +3,11 @@
 
 [[./screenshots/example.png]]
 
+This is a package to add thumbnails to ~Dired~.
+
 * Dependencies
 #+begin_src sh :tangle yes
-brew install ffmpegthumbnailer
+brew install ffmpegthumbnailer # Used for videos.
 #+end_src
 * Installation
 : M-x package-install RET media-thumbnail RET
