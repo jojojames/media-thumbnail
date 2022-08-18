@@ -110,6 +110,16 @@ to disable automatic refresh when a special command is triggered."
   :type 'list
   :group 'media-thumbnail)
 
+(defcustom media-thumbnail-ignore-aspect-ratio nil
+  "If true, ignore aspect ratio when creating thumbnails."
+  :type 'boolean
+  :group 'media-thumbnail)
+
+(defcustom media-thumbnail-ffmpegthumbnailer-executable "ffmpegthumbnailer"
+  "Location of ffmpegthumbnailer."
+  :type 'string
+  :group 'media-thumbnail)
+
 ;;
 ;; (@* "Variables" )
 ;;
@@ -139,14 +149,14 @@ to disable automatic refresh when a special command is triggered."
   "Returns a command that generates a thumbnail for FILE."
   (mapconcat
    (lambda (x) x)
-   `("ffmpegthumbnailer"
+   `(,media-thumbnail-ffmpegthumbnailer-executable
      "-m"
+     ,@(when media-thumbnail-ignore-aspect-ratio '("-a"))
      "-i"
      ,(shell-quote-argument file)
      "-o"
      ,(shell-quote-argument (media-thumbnail-get-cache-path file))
      "-q" "10" ;; Max quality for jpeg
-     ;; "-a" ;; Ignore aspect ratio
      "-s"
      ,(number-to-string media-thumbnail-size))
    " "))
