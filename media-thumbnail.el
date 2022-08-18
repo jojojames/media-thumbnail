@@ -37,7 +37,7 @@
 ;;
 
 (defmacro media-thumbnail--log (&rest args)
-  "Log message only if `media-thumbnail-log' is enabled."
+  "Log ARGS only if `media-thumbnail-log' is enabled."
   `(when media-thumbnail-log
      (message ,@args)))
 
@@ -141,12 +141,12 @@ to disable automatic refresh when a special command is triggered."
 ;;
 
 (defun media-thumbnail-get-cache-path (file)
-  "Returns the cached image path for FILE."
+  "Return the cached image path for FILE."
   (format "%s%s.jpg" (expand-file-name media-thumbnail-cache-dir)
           (file-name-base file)))
 
 (defun media-thumbnail-ffmpegthumbnailer-cmd (file)
-  "Returns a command that generates a thumbnail for FILE."
+  "Return a command to generate a thumbnail for FILE."
   (mapconcat
    (lambda (x) x)
    `(,media-thumbnail-ffmpegthumbnailer-executable
@@ -162,7 +162,7 @@ to disable automatic refresh when a special command is triggered."
    " "))
 
 (defun media-thumbnail-for-file (file)
-  "Returns image spec for FILE."
+  "Return image spec for FILE."
   (unless (file-exists-p media-thumbnail-cache-dir)
     (make-directory media-thumbnail-cache-dir))
   (cond
@@ -282,7 +282,7 @@ to disable automatic refresh when a special command is triggered."
 ;;
 
 (defun media-thumbnail-dired--display ()
-  "Display the icons of files in a dired buffer."
+  "Display the icons of files in a Dired buffer."
   (interactive)
   (remove-images (point-min) (point-max))
   (let ((inhibit-read-only t))
