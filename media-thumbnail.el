@@ -122,6 +122,11 @@ to disable automatic refresh when a special command is triggered."
   :type 'string
   :group 'media-thumbnail)
 
+(defcustom media-thumbnail-dired-animate-thumbnails t
+  "Whether or not `dired' animates thumbnails/gifs."
+  :type 'boolean
+  :group 'media-thumbnail)
+
 ;;
 ;; (@* "Variables" )
 ;;
@@ -174,6 +179,8 @@ to disable automatic refresh when a special command is triggered."
     nil)
    ((member (downcase (file-name-extension file))
             media-thumbnail-image-exts)
+    (media-thumbnail--create-image file))
+   ((equal (downcase (file-name-extension file)) "gif")
     (media-thumbnail--create-image file))
    ((member (downcase (file-name-extension file))
             media-thumbnail-video-exts)
@@ -298,7 +305,10 @@ to disable automatic refresh when a special command is triggered."
           (unless (member (dired-get-filename 'verbatim t) '("." ".."))
             (let ((filename (dired-get-filename nil t)))
               (when-let ((image (media-thumbnail-for-file filename)))
-                (put-image image (point))))))
+                (put-image image (point))
+                (when (and media-thumbnail-dired-animate-thumbnails
+                           (equal (file-name-extension filename) "gif"))
+                  (image-animate image 0 t))))))
         (forward-line 1)))))
 
 (define-minor-mode media-thumbnail-dired-mode
