@@ -57,8 +57,10 @@
   :type 'boolean
   :group 'media-thumbnail)
 
-(defcustom media-thumbnail-size 256
-  "The size of the icon when creating an icon."
+(defcustom media-thumbnail-size 0
+  "The size of the icon when creating a video thumbnail.
+
+0 is the original size of the video."
   :type 'number
   :group 'media-thumbnail)
 
