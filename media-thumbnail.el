@@ -30,7 +30,13 @@
 
 ;;; Code:
 (require 'image)
-(eval-when-compile (require 'subr-x)) ; `if-let*' and `when-let*'
+(require 'cl-seq)
+(eval-when-compile (require 'subr-x))
+
+(declare-function dired-hide-details-mode "dired")
+(declare-function dired-get-filename "dired")
+(declare-function dired-move-to-filename "dired")
+(declare-function dired-do-redisplay "dired")
 
 ;;
 ;; (@* "Macros" )
@@ -218,7 +224,7 @@ to disable automatic refresh when a special command is triggered."
              (< (length (process-list))
                 media-thumbnail-max-processes))
     (pcase-let* ((convert-request (pop media-thumbnail--queue))
-                 (`(:command ,command :image-spec ,image-spec :file ,file)
+                 (`(:command ,command :image-spec ,image-spec :file ,_)
                   convert-request))
       (media-thumbnail--log
        "-----\nCalling: %s\n %S\n-----" command image-spec)
@@ -234,7 +240,7 @@ to disable automatic refresh when a special command is triggered."
   "Call `redisplay' and reset `media-thumbnail--redisplay-timer'."
   (media-thumbnail--log "Calling redisplay!")
   (while media-thumbnail--specs-to-flush
-    (pcase-let* ((`(:command ,command :image-spec ,image-spec :file ,file)
+    (pcase-let* ((`(:command ,_ :image-spec ,image-spec :file ,file)
                   (car media-thumbnail--specs-to-flush)))
       (media-thumbnail--log
        "-----\nFlushing: %S\nFile: %s\n-----" image-spec file)
@@ -280,13 +286,18 @@ to disable automatic refresh when a special command is triggered."
         (string-match-p "videos" f)
         (string-match-p "pictures" f)
         (string-match-p "photos" f))
-       (cl-find-if (lambda (x)
-                     (or
-                      (member
-                       (file-name-extension x) media-thumbnail-video-exts)
-                      (member
-                       (file-name-extension x) media-thumbnail-image-exts)))
-                   (directory-files default-directory))))))
+       'media-thumbnail--directory-has-media))))
+
+(defun media-thumbnail--directory-has-media (directory)
+  "Return if current DIRECTORY has media files.
+
+If DIRECTORY is nil, use `default-directory'."
+  (cl-find-if (lambda (x)
+                (when-let ((ext (file-name-extension x)))
+                  (or
+                   (member (downcase ext) media-thumbnail-video-exts)
+                   (member (downcase ext) media-thumbnail-image-exts))))
+              (directory-files (or directory default-directory))))
 
 ;;
 ;; (@* "Dired" )
@@ -321,7 +332,7 @@ to disable automatic refresh when a special command is triggered."
         (setq-local media-thumbnail--timer
                     (run-with-timer 0 0.25 #'media-thumbnail--convert))
         (add-hook 'dired-after-readin-hook
-                  'media-thumbnail-dired--display :append :local)
+                  #'media-thumbnail-dired--display :append :local)
         (mapc
          (lambda (x)
            (if (consp x)
@@ -354,12 +365,11 @@ to disable automatic refresh when a special command is triggered."
       (dired-hide-details-mode -1))
     (setq-local media-thumbnail--timer nil)
     (remove-hook 'dired-after-readin-hook
-                 'media-thumbnail-dired--display :local)
+                 #'media-thumbnail-dired--display :local)
     (mapc
      (lambda (x)
        (if (consp x)
-           (let ((command (car x))
-                 (delay (cdr x)))
+           (let ((command (car x)))
              (advice-remove
               command
               (intern
