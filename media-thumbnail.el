@@ -30,7 +30,7 @@
 
 ;;; Code:
 (require 'image)
-(require 'cl-seq)
+(require 'cl-lib)
 (eval-when-compile (require 'subr-x))
 
 (declare-function dired-hide-details-mode "dired")
