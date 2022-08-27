@@ -1,6 +1,8 @@
 #+TITLE: Media Thumbnail
 #+STARTUP: noindent
 
+[[https://melpa.org/#/media-thumbnail][file:https://melpa.org/packages/media-thumbnail-badge.svg]]
+
 [[./screenshots/example.png]]
 
 This is a package that can create thumbnails from media files like images or
