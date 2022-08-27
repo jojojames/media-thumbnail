@@ -204,7 +204,7 @@ to disable automatic refresh when a special command is triggered."
                          :file ,file)
                        :append)
           image-spec))))
-   (:default nil)))
+   (t nil)))
 
 (defun media-thumbnail--create-image (filename)
   "Helper method to create and return an image given FILENAME."
