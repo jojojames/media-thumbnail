@@ -360,7 +360,8 @@ If DIRECTORY is nil, use `default-directory'."
                            nil
                            #'media-thumbnail--redisplay))))))))
              (advice-add x :after #'media-thumbnail--redisplay)))
-         media-thumbnail-special-refresh-commands))
+         media-thumbnail-special-refresh-commands)
+        (media-thumbnail-dired--display))
     (when (funcall media-thumbnail-dired-should-hide-details-fn)
       (dired-hide-details-mode -1))
     (setq-local media-thumbnail--timer nil)
@@ -376,7 +377,8 @@ If DIRECTORY is nil, use `default-directory'."
                (format "media-thumbnail-refresh-after-%S"
                        command))))
          (advice-remove x 'media-thumbnail--redisplay)))
-     media-thumbnail-special-refresh-commands)))
+     media-thumbnail-special-refresh-commands)
+    (remove-images (point-min) (point-max))))
 
 (provide 'media-thumbnail)
 ;;; media-thumbnail.el ends here
