@@ -128,6 +128,46 @@ to disable automatic refresh when a special command is triggered."
   :type 'string
   :group 'media-thumbnail)
 
+(defcustom media-thumbnail-ffmpeg-executable "ffmpeg"
+  "Location of the ffmpeg binary used by the `ffmpeg' generator."
+  :type 'string
+  :group 'media-thumbnail)
+
+(defcustom media-thumbnail-generator 'ffmpeg
+  "Backend used to generate video thumbnails.
+
+`ffmpeg' — invokes `ffmpeg' directly in a two-step pipeline: first try
+to extract an embedded cover picture; if that fails or the source has
+no attached picture, decode a single frame at
+`media-thumbnail-ffmpeg-seek-time'.  Uses whatever codec support the
+system `ffmpeg' provides, which is generally more current than
+`ffmpegthumbnailer's bundled decoders — the default because that
+tracks the modern codec set that fails on many `ffmpegthumbnailer'
+builds (AV1, HEVC 10-bit, some proprietary containers).
+
+`ffmpegthumbnailer' — invokes the legacy `ffmpegthumbnailer' binary in
+a single shot.  Faster (one process) but its decoder support lags
+behind ffmpeg."
+  :type '(choice (const :tag "ffmpeg (2-step: embedded cover then frame)" ffmpeg)
+                 (const :tag "ffmpegthumbnailer (legacy)" ffmpegthumbnailer))
+  :group 'media-thumbnail)
+
+(defcustom media-thumbnail-ffmpeg-seek-times '("5" "1" "0.1")
+  "Seek positions the ffmpeg frame-decode pass will try, in order.
+
+Each entry is passed to `ffmpeg -ss' in turn: the frame command runs
+with the first entry; on non-zero exit or empty output the next entry
+is tried; the pipeline reports failure only when the whole list is
+exhausted.  Handles the common failure modes: 5s covers most files;
+1s covers short clips; 0.1s covers extremely short clips and files
+whose only decodable frame is right at the start.
+
+Accepts any duration `ffmpeg' understands — seconds (\"5\"), MM:SS
+(\"1:30\"), or HH:MM:SS.  Percentages are NOT supported by `ffmpeg'
+itself.  Set to a single-element list to disable the retry chain."
+  :type '(repeat string)
+  :group 'media-thumbnail)
+
 (defcustom media-thumbnail-dired-animate-thumbnails t
   "Whether or not `dired' animates thumbnails/gifs."
   :type 'boolean
@@ -211,13 +251,13 @@ works for existing callers."
               (file-exists-p cache-path))
           (media-thumbnail--create-image cache-path)
         (push file media-thumbnail--handled-files)
-        (let* ((command (media-thumbnail-ffmpegthumbnailer-cmd file))
-               (image-spec (media-thumbnail--create-image cache-path)))
+        (let ((image-spec (media-thumbnail--create-image cache-path)))
+          ;; Command is not stored on the queue anymore — the actual
+          ;; shell invocation is chosen at drain time via
+          ;; `media-thumbnail-generator', so dired inherits whichever
+          ;; backend (ffmpeg / ffmpegthumbnailer) the user picked.
           (add-to-list 'media-thumbnail--queue
-                       `(
-                         :command ,command
-                         :image-spec ,image-spec
-                         :file ,file)
+                       `(:image-spec ,image-spec :file ,file)
                        :append)
           image-spec))))
    (t nil)))
@@ -235,27 +275,189 @@ works for existing callers."
                   :ascent 'center)))
 
 (defun media-thumbnail--convert ()
-  "Pop and run tasks in `media-thumbnail--queue'."
+  "Pop and dispatch one task from `media-thumbnail--queue'.
+
+Routes through `media-thumbnail-generate-async', so dired honors
+`media-thumbnail-generator' the same way the async single-shot path
+does — ffmpeg (2-step: poster then frame chain) by default, or
+ffmpegthumbnailer when explicitly selected.  The queue itself still
+throttles concurrent processes via `media-thumbnail-max-processes'
+so a dired buffer with hundreds of videos doesn't spawn a subprocess
+storm."
   (when (and media-thumbnail--queue
              (< (length (process-list))
                 media-thumbnail-max-processes))
     (pcase-let* ((convert-request (pop media-thumbnail--queue))
-                 (`(:command ,command :image-spec ,image-spec :file ,_)
-                  convert-request))
-      (media-thumbnail--log
-       "-----\nCalling: %s\n %S\n-----" command image-spec)
-      (call-process-shell-command command nil 0)
-      (push convert-request media-thumbnail--specs-to-flush)
-      (unless media-thumbnail--redisplay-timer
-        (media-thumbnail--log "Setting up redisplay!")
-        (setq-local
-         media-thumbnail--redisplay-timer
-         (run-with-timer 3 nil 'media-thumbnail--redisplay))))))
+                 (`(:image-spec ,image-spec :file ,file)
+                  convert-request)
+                 (host-buf (current-buffer)))
+      (media-thumbnail--log "Dispatching: %S %s" image-spec file)
+      (media-thumbnail-generate-async
+       file
+       :callback
+       (lambda (_file _cache-path success-p)
+         (when success-p
+           (when (buffer-live-p host-buf)
+             (with-current-buffer host-buf
+               (push convert-request media-thumbnail--specs-to-flush)
+               (unless media-thumbnail--redisplay-timer
+                 (media-thumbnail--log "Setting up redisplay!")
+                 (setq-local
+                  media-thumbnail--redisplay-timer
+                  (run-with-timer 0.1 nil #'media-thumbnail--redisplay)))))))))))
+
+(defun media-thumbnail--fire-callbacks (file cache-path success-p)
+  "Fire every pending callback registered for FILE, then clear the entry."
+  (let ((callbacks (gethash file media-thumbnail--async-callbacks)))
+    (remhash file media-thumbnail--async-callbacks)
+    (dolist (cb callbacks)
+      (ignore-errors (funcall cb file cache-path success-p)))))
+
+(defun media-thumbnail--spawn (cmd on-exit)
+  "Run shell CMD asynchronously; call ON-EXIT with SUCCESS-P once it exits.
+
+SUCCESS-P is t only when the process exited normally with status 0.
+Callers layer their own file-existence / non-empty checks on top."
+  (media-thumbnail--log "Async: %s" cmd)
+  (let ((proc (start-process-shell-command
+               (format "media-thumbnail %s" (substring cmd 0 (min 40 (length cmd))))
+               nil cmd)))
+    (set-process-sentinel
+     proc
+     (lambda (proc _event)
+       (when (memq (process-status proc) '(exit signal))
+         (funcall on-exit
+                  (and (eq (process-status proc) 'exit)
+                       (zerop (process-exit-status proc)))))))))
+
+(defun media-thumbnail--file-non-empty-p (path)
+  "Return non-nil if PATH exists on disk with non-zero size.
+
+Guards against `ffmpeg -y' opening the output file and truncating it
+before failing — a zero-byte artifact should count as failure, not
+success, so the frame-fallback still runs and overwrites it."
+  (when-let* ((attrs (file-attributes path)))
+    (> (file-attribute-size attrs) 0)))
+
+(cl-defun media-thumbnail-ffmpeg-poster-cmd (file cache-path)
+  "Return an ffmpeg shell command that extracts FILE's embedded cover art.
+
+Writes to CACHE-PATH as JPEG.  Exits non-zero when the source has no
+attached-picture stream, so the caller can fall through to a
+frame-decode pass without inspecting stderr."
+  (mapconcat
+   #'identity
+   `(,media-thumbnail-ffmpeg-executable
+     "-nostdin" "-y" "-loglevel" "error"
+     "-i" ,(shell-quote-argument file)
+     "-map" "0:v:m:disposition:attached_pic"
+     "-frames:v" "1"
+     "-q:v" "2"
+     ,(shell-quote-argument cache-path))
+   " "))
+
+(cl-defun media-thumbnail-ffmpeg-frame-cmd (file cache-path &key size ignore-aspect-ratio seek-time)
+  "Return an ffmpeg shell command that decodes a single frame from FILE.
+
+Places `-ss' AFTER `-i' so ffmpeg does an accurate seek — decode from
+start until the timestamp — instead of the input-side fast seek that
+lands on the nearest prior keyframe.  Fast seek is faster but produces
+`frame not finished' errors on files with sparse keyframes; the
+accurate variant is one linear read per file and always yields a
+complete frame.
+
+Writes a JPEG to CACHE-PATH.  SIZE overrides `media-thumbnail-size';
+IGNORE-ASPECT-RATIO overrides `media-thumbnail-ignore-aspect-ratio'.
+A SIZE of 0 skips scaling.  SEEK-TIME defaults to the first entry of
+`media-thumbnail-ffmpeg-seek-times' — supply an override when driving
+the retry chain."
+  (let* ((size (or size media-thumbnail-size))
+         (ignore-aspect-ratio (if ignore-aspect-ratio
+                                  ignore-aspect-ratio
+                                media-thumbnail-ignore-aspect-ratio))
+         (seek (or seek-time
+                   (car media-thumbnail-ffmpeg-seek-times)
+                   "5"))
+         (scale (unless (zerop size)
+                  (if ignore-aspect-ratio
+                      (format "scale=%d:%d" size size)
+                    (format "scale=%d:%d:force_original_aspect_ratio=decrease"
+                            size size)))))
+    (mapconcat
+     #'identity
+     `(,media-thumbnail-ffmpeg-executable
+       "-nostdin" "-y" "-loglevel" "error"
+       "-i" ,(shell-quote-argument file)
+       "-ss" ,seek
+       "-frames:v" "1"
+       "-q:v" "2"
+       ,@(when scale (list "-vf" (shell-quote-argument scale)))
+       ,(shell-quote-argument cache-path))
+     " ")))
+
+(defun media-thumbnail--generate-ffmpegthumbnailer (file cache-path size ignore-aspect-ratio)
+  "Legacy single-shot `ffmpegthumbnailer' generator for FILE.
+
+Fires callbacks registered on `media-thumbnail--async-callbacks' with
+SUCCESS-P = t iff the subprocess exits 0 and CACHE-PATH ends up
+non-empty."
+  (media-thumbnail--spawn
+   (media-thumbnail-ffmpegthumbnailer-cmd
+    file :size size :ignore-aspect-ratio ignore-aspect-ratio)
+   (lambda (exit-ok)
+     (media-thumbnail--fire-callbacks
+      file cache-path
+      (and exit-ok (media-thumbnail--file-non-empty-p cache-path))))))
+
+(defun media-thumbnail--ffmpeg-frame-chain (file cache-path size ignore-aspect-ratio seek-times)
+  "Try to decode a frame from FILE, walking SEEK-TIMES until one succeeds.
+
+Each attempt spawns `ffmpeg' with the head of SEEK-TIMES as `-ss'.
+Non-zero exit or an empty output file advances to the next entry;
+first successful attempt fires the pending callbacks with SUCCESS-P
+= t.  Exhausted list without success fires SUCCESS-P = nil."
+  (cond
+   ((null seek-times)
+    (media-thumbnail--fire-callbacks file cache-path nil))
+   (t
+    (media-thumbnail--spawn
+     (media-thumbnail-ffmpeg-frame-cmd
+      file cache-path
+      :size size
+      :ignore-aspect-ratio ignore-aspect-ratio
+      :seek-time (car seek-times))
+     (lambda (frame-ok)
+       (if (and frame-ok (media-thumbnail--file-non-empty-p cache-path))
+           (media-thumbnail--fire-callbacks file cache-path t)
+         (media-thumbnail--ffmpeg-frame-chain
+          file cache-path size ignore-aspect-ratio (cdr seek-times))))))))
+
+(defun media-thumbnail--generate-ffmpeg (file cache-path size ignore-aspect-ratio)
+  "Two-step `ffmpeg' generator: embedded poster, then decoded-frame chain.
+
+Attempts to extract an attached-picture stream first — quick when it
+succeeds and generally the best-quality result for files that carry a
+poster (music videos, movies with cover art).  When the poster attempt
+exits non-zero or produces an empty JPEG (source has no
+attached-picture stream, or ffmpeg failed to write it), falls through
+to `media-thumbnail--ffmpeg-frame-chain', which walks
+`media-thumbnail-ffmpeg-seek-times' until one seek position yields a
+decodable frame or the list is exhausted."
+  (media-thumbnail--spawn
+   (media-thumbnail-ffmpeg-poster-cmd file cache-path)
+   (lambda (poster-ok)
+     (if (and poster-ok (media-thumbnail--file-non-empty-p cache-path))
+         (media-thumbnail--fire-callbacks file cache-path t)
+       (media-thumbnail--ffmpeg-frame-chain
+        file cache-path size ignore-aspect-ratio
+        media-thumbnail-ffmpeg-seek-times)))))
 
 ;;;###autoload
 (cl-defun media-thumbnail-generate-async (file &key size ignore-aspect-ratio callback)
-  "Generate a thumbnail for FILE via ffmpegthumbnailer, asynchronously.
+  "Generate a thumbnail for FILE asynchronously.
 
+Backend is selected by `media-thumbnail-generator' (`ffmpeg' by
+default, or `ffmpegthumbnailer' for the legacy single-shot path).
 Returns the cache path where the JPEG will land.
 
 SIZE and IGNORE-ASPECT-RATIO override `media-thumbnail-size' and
@@ -264,13 +466,13 @@ size the thumbnail to fit their preview surface without mutating
 package-wide defcustoms.
 
 CALLBACK, if non-nil, is invoked with (FILE CACHE-PATH SUCCESS-P) once
-the subprocess completes.  When the JPEG already exists on disk,
-CALLBACK is invoked immediately with SUCCESS-P = t and no subprocess
-is spawned.
+generation completes.  When the JPEG already exists on disk, CALLBACK
+is invoked immediately with SUCCESS-P = t and no subprocess is
+spawned.
 
 Concurrent requests for the same FILE are coalesced through
 `media-thumbnail--async-callbacks': subsequent calls append their
-callback to the pending list and share the in-flight subprocess.
+callback to the pending list and share the in-flight pipeline.
 Callers do not need their own dedup / in-flight bookkeeping."
   (unless (file-exists-p media-thumbnail-cache-dir)
     (make-directory media-thumbnail-cache-dir t))
@@ -289,29 +491,20 @@ Callers do not need their own dedup / in-flight bookkeeping."
      (t
       (puthash file (if callback (list callback) nil)
                media-thumbnail--async-callbacks)
-      (let* ((cmd (media-thumbnail-ffmpegthumbnailer-cmd
-                   file :size size :ignore-aspect-ratio ignore-aspect-ratio))
-             (name (format "media-thumbnail %s" (file-name-nondirectory file)))
-             (proc (start-process-shell-command name nil cmd)))
-        (media-thumbnail--log "Async: %s" cmd)
-        (set-process-sentinel
-         proc
-         (lambda (proc _event)
-           (when (memq (process-status proc) '(exit signal))
-             (let ((callbacks (gethash file media-thumbnail--async-callbacks))
-                   (success-p (and (eq (process-status proc) 'exit)
-                                   (zerop (process-exit-status proc))
-                                   (file-exists-p cache-path))))
-               (remhash file media-thumbnail--async-callbacks)
-               (dolist (cb callbacks)
-                 (ignore-errors (funcall cb file cache-path success-p)))))))
-      cache-path)))))
+      (pcase media-thumbnail-generator
+        ('ffmpegthumbnailer
+         (media-thumbnail--generate-ffmpegthumbnailer
+          file cache-path size ignore-aspect-ratio))
+        (_
+         (media-thumbnail--generate-ffmpeg
+          file cache-path size ignore-aspect-ratio)))
+      cache-path))))
 
 (defun media-thumbnail--redisplay (&rest _)
   "Call `redisplay' and reset `media-thumbnail--redisplay-timer'."
   (media-thumbnail--log "Calling redisplay!")
   (while media-thumbnail--specs-to-flush
-    (pcase-let* ((`(:command ,_ :image-spec ,image-spec :file ,file)
+    (pcase-let* ((`(:image-spec ,image-spec :file ,file)
                   (car media-thumbnail--specs-to-flush)))
       (media-thumbnail--log
        "-----\nFlushing: %S\nFile: %s\n-----" image-spec file)
