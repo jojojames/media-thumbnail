@@ -518,9 +518,11 @@ size the thumbnail to fit their preview surface without mutating
 package-wide defcustoms.
 
 CALLBACK, if non-nil, is invoked with (FILE CACHE-PATH SUCCESS-P) once
-generation completes.  When the JPEG already exists on disk, CALLBACK
-is invoked immediately with SUCCESS-P = t and no subprocess is
-spawned.
+generation completes.  The invocation is always asynchronous — even
+on a cache hit CALLBACK fires from a `run-at-time' one-shot, not
+inside the caller's stack frame.  This matches the sentinel path's
+semantics so callers can rely on \"my callback fires later\"
+regardless of whether the JPEG was on disk already.
 
 Concurrent requests for the same FILE are coalesced through
 `media-thumbnail--async-callbacks': subsequent calls append their
@@ -530,7 +532,8 @@ Callers do not need their own dedup / in-flight bookkeeping."
   (let ((cache-path (media-thumbnail-get-cache-path file)))
     (cond
      ((file-exists-p cache-path)
-      (when callback (funcall callback file cache-path t))
+      (when callback
+        (run-at-time 0 nil callback file cache-path t))
       cache-path)
      ((gethash file media-thumbnail--async-callbacks)
       (when callback

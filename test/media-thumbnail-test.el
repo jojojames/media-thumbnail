@@ -262,6 +262,35 @@ exit-ok is nil, regardless of what's on disk."
           (should on-fail-called))
       (delete-file tmp))))
 
+(ert-deftest media-thumbnail-test-cache-hit-callback-is-async ()
+  "Bug 8: `media-thumbnail-generate-async' must invoke its callback
+asynchronously even on a cache hit — the sentinel path always fires
+later, so the cache-hit branch matching that contract avoids
+surprising callers with a synchronous reentrancy.
+
+Regression guard: if a future edit reverts to `funcall' inside the
+cache-hit branch, this test fires the callback before
+`sit-for'/`accept-process-output' get a chance to service the timer,
+and the assertion for the pre-async state fails."
+  (let ((tmp-cache (make-temp-file "mt-async-cache-" t))
+        (fired nil))
+    (unwind-protect
+        (let* ((media-thumbnail-cache-dir tmp-cache)
+               (media-thumbnail--cache-dir-ensured nil)
+               (source (concat tmp-cache "/dummy.mp4"))
+               (cache-jpeg
+                (media-thumbnail-get-cache-path source)))
+          (write-region "x" nil cache-jpeg nil 'silent)
+          (media-thumbnail-generate-async
+           source
+           :callback (lambda (&rest _) (setq fired t)))
+          ;; Not yet fired — cache-hit branch must have deferred.
+          (should (null fired))
+          ;; Let the 0-delay timer run.
+          (accept-process-output nil 0.05)
+          (should fired))
+      (delete-directory tmp-cache t))))
+
 ;;; End of test file.
 (provide 'media-thumbnail-test)
 ;;; media-thumbnail-test.el ends here
