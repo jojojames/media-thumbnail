@@ -458,6 +458,54 @@ seek stays a single post-input `-ss'."
     (should-not (string-match-p "-ss 5 -i " cmd))
     (should (string-match-p "-i /tmp/a\\.mp4 -ss 5 " cmd))))
 
+(ert-deftest media-thumbnail-test-parse-ffprobe-json ()
+  "Parser must convert ffprobe JSON into our metadata plist,
+extracting the first video / audio stream and coercing numeric
+strings into numbers."
+  (let* ((json (json-parse-string
+                "{\"format\":{\"duration\":\"3600.5\",\"size\":\"1000000\",\"bit_rate\":\"2500000\"},\"streams\":[{\"codec_type\":\"video\",\"codec_name\":\"h264\",\"width\":1920,\"height\":1080},{\"codec_type\":\"audio\",\"codec_name\":\"aac\"}]}"))
+         (meta (media-thumbnail--parse-ffprobe-json json)))
+    (should (equal (plist-get meta :duration) 3600.5))
+    (should (equal (plist-get meta :size) 1000000))
+    (should (equal (plist-get meta :bit-rate) 2500000))
+    (should (equal (plist-get meta :width) 1920))
+    (should (equal (plist-get meta :height) 1080))
+    (should (equal (plist-get meta :video-codec) "h264"))
+    (should (equal (plist-get meta :audio-codec) "aac"))))
+
+(ert-deftest media-thumbnail-test-parse-ffprobe-json-missing-streams ()
+  "A JSON with only a format section (no streams) must still yield
+a plist with the format-level fields set and stream fields nil —
+graceful handling of audio-only files or malformed containers."
+  (let* ((json (json-parse-string
+                "{\"format\":{\"duration\":\"60.0\"},\"streams\":[]}"))
+         (meta (media-thumbnail--parse-ffprobe-json json)))
+    (should (equal (plist-get meta :duration) 60.0))
+    (should (null (plist-get meta :video-codec)))
+    (should (null (plist-get meta :width)))))
+
+(ert-deftest media-thumbnail-test-probe-duration-reads-from-metadata-cache ()
+  "`media-thumbnail--probe-duration' must be a thin reader on the
+metadata cache — sharing the underlying probe means header + seek
+consumers issue one ffprobe per file, not two."
+  (let ((media-thumbnail--metadata-cache (make-hash-table :test 'equal))
+        (probe-calls 0))
+    (cl-letf (((symbol-function 'media-thumbnail--ffprobe-available-p)
+               (lambda () t))
+              ((symbol-function 'call-process)
+               (lambda (&rest _)
+                 (cl-incf probe-calls)
+                 (insert "{\"format\":{\"duration\":\"120.0\"},\"streams\":[]}")
+                 0)))
+      (let ((d1 (media-thumbnail--probe-duration "x.mp4"))
+            (m1 (media-thumbnail-probe-metadata "x.mp4"))
+            (d2 (media-thumbnail--probe-duration "x.mp4")))
+        (should (equal d1 120.0))
+        (should (equal (plist-get m1 :duration) 120.0))
+        (should (equal d2 120.0))
+        ;; Three lookups, one probe.
+        (should (equal probe-calls 1))))))
+
 ;;; End of test file.
 (provide 'media-thumbnail-test)
 ;;; media-thumbnail-test.el ends here

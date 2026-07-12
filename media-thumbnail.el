@@ -32,6 +32,11 @@
 (require 'image)
 (require 'cl-lib)
 (eval-when-compile (require 'subr-x))
+;; `json-parse-buffer' is a C primitive present since Emacs 27 (>= our
+;; minimum 28.1 in Package-Requires); no `require' needed.  The
+;; declare-function keeps the byte compiler quiet on batch builds that
+;; happen to short-circuit the primitive lookup.
+(declare-function json-parse-buffer "json.c" (&rest args))
 
 (declare-function dired-hide-details-mode "dired")
 (declare-function dired-get-filename "dired")
@@ -247,13 +252,13 @@ we call `executable-find' at most once per Emacs session.  Reset by
 `media-thumbnail-clear-all' so a user who installed ffprobe after
 Emacs startup can re-detect it.")
 
-(defvar media-thumbnail--duration-cache (make-hash-table :test 'equal)
-  "FILE → duration (float seconds) memo for the ffprobe path.
+(defvar media-thumbnail--metadata-cache (make-hash-table :test 'equal)
+  "FILE → metadata plist memo for the ffprobe path.
 
-Each unique FILE is probed at most once per session; the resolver
-threads the cached duration through every `%' entry in the seek
-chain so a five-attempt fallback ladder still runs at most one
-ffprobe subprocess per file.")
+Each unique FILE is probed at most once per session; the same
+ffprobe invocation feeds the seek-chain duration lookup and any
+consumer that wants richer metadata (`media-thumbnail-probe-metadata').
+See that function's docstring for the plist keys.")
 
 (defvar media-thumbnail--convert-timer nil
   "Pending one-shot timer for `media-thumbnail--convert', or nil.
@@ -485,31 +490,79 @@ freshly-installed ffprobe is picked up without a restart."
           (and (executable-find media-thumbnail-ffprobe-executable) t)))
   media-thumbnail--ffprobe-available)
 
-(defun media-thumbnail--probe-duration (file)
-  "Return FILE's duration in seconds via `ffprobe', memoized.
+(defun media-thumbnail--parse-ffprobe-json (json)
+  "Convert a parsed ffprobe JSON object JSON to our metadata plist.
 
-Runs `ffprobe -v error -show_entries format=duration -of csv=p=0'
-synchronously.  Result is cached in `media-thumbnail--duration-cache'
-so subsequent seek-chain attempts against the same FILE do not
-re-probe.  Returns nil when ffprobe is unavailable, exits non-zero,
-or emits an unparseable duration."
+Extracted so tests can drive the shape without spawning ffprobe.
+Returns nil when JSON has no `format' section (malformed output).
+Unknown keys collapse to nil; numeric strings are coerced to
+numbers; the first video and audio streams win when the file has
+multiples."
+  (let* ((format (gethash "format" json))
+         (streams (append (gethash "streams" json) nil))
+         (video (cl-find-if (lambda (s)
+                              (equal (gethash "codec_type" s) "video"))
+                            streams))
+         (audio (cl-find-if (lambda (s)
+                              (equal (gethash "codec_type" s) "audio"))
+                            streams))
+         (num (lambda (s) (and (stringp s)
+                               (string-match-p "\\`[0-9.]+\\'" s)
+                               (string-to-number s)))))
+    (when format
+      (list :duration    (funcall num (gethash "duration" format))
+            :size        (funcall num (gethash "size" format))
+            :bit-rate    (funcall num (gethash "bit_rate" format))
+            :width       (and video (gethash "width" video))
+            :height      (and video (gethash "height" video))
+            :video-codec (and video (gethash "codec_name" video))
+            :audio-codec (and audio (gethash "codec_name" audio))))))
+
+(defun media-thumbnail-probe-metadata (file)
+  "Return a metadata plist for FILE via `ffprobe', memoized.
+
+Runs one `ffprobe' subprocess per unique FILE per Emacs session;
+the result is cached in `media-thumbnail--metadata-cache' so
+consumers (seek-chain resolver, preview headers, etc.) share the
+same probe.  Returns nil when ffprobe is unavailable or its output
+does not parse.
+
+Plist keys (all may be nil when ffprobe omits them):
+
+  :duration     Float seconds.
+  :size         Bytes on disk.
+  :bit-rate     Bits per second, container-level.
+  :width        Video stream pixel width.
+  :height       Video stream pixel height.
+  :video-codec  Codec name of the first video stream, e.g. \"h264\".
+  :audio-codec  Codec name of the first audio stream, e.g. \"aac\"."
   (when (media-thumbnail--ffprobe-available-p)
-    (let ((cached (gethash file media-thumbnail--duration-cache 'miss)))
+    (let ((cached (gethash file media-thumbnail--metadata-cache 'miss)))
       (if (not (eq cached 'miss))
           cached
-        (let ((duration
+        (let ((meta
                (with-temp-buffer
                  (when (zerop
                         (call-process
                          media-thumbnail-ffprobe-executable nil t nil
                          "-v" "error"
-                         "-show_entries" "format=duration"
-                         "-of" "csv=p=0" file))
-                   (let ((raw (string-trim (buffer-string))))
-                     (and (string-match-p "\\`[0-9.]+\\'" raw)
-                          (string-to-number raw)))))))
-          (puthash file duration media-thumbnail--duration-cache)
-          duration)))))
+                         "-show_entries"
+                         "format=duration,size,bit_rate:stream=codec_name,codec_type,width,height"
+                         "-of" "json" file))
+                   (goto-char (point-min))
+                   (ignore-errors
+                     (media-thumbnail--parse-ffprobe-json
+                      (json-parse-buffer)))))))
+          (puthash file meta media-thumbnail--metadata-cache)
+          meta)))))
+
+(defun media-thumbnail--probe-duration (file)
+  "Return FILE's duration in seconds via `media-thumbnail-probe-metadata'.
+
+Thin reader on the shared metadata cache; sharing means the
+seek-chain resolver and header consumers issue a single ffprobe
+per file rather than one each."
+  (plist-get (media-thumbnail-probe-metadata file) :duration))
 
 (defun media-thumbnail--resolve-seek-time (entry duration)
   "Return a plain-seconds string for ENTRY, or nil if it cannot resolve.
@@ -776,7 +829,7 @@ Callers do not need their own dedup / in-flight bookkeeping."
     (cancel-timer media-thumbnail--convert-timer))
   (setq media-thumbnail--convert-timer nil)
   (clrhash media-thumbnail--handled-files)
-  (clrhash media-thumbnail--duration-cache)
+  (clrhash media-thumbnail--metadata-cache)
   (setq media-thumbnail--ffprobe-available 'unchecked)
   (setq media-thumbnail--cache-dir-ensured nil)
   (when (file-exists-p media-thumbnail-cache-dir)
