@@ -564,6 +564,115 @@ seek-chain resolver and header consumers issue a single ffprobe
 per file rather than one each."
   (plist-get (media-thumbnail-probe-metadata file) :duration))
 
+;;
+;; (@* "Preview buffer helpers" )
+;;
+
+(defun media-thumbnail-format-duration (seconds)
+  "Format SECONDS as MM:SS or HH:MM:SS depending on length."
+  (let* ((s (round seconds))
+         (h (/ s 3600))
+         (m (/ (mod s 3600) 60))
+         (sec (mod s 60)))
+    (if (zerop h)
+        (format "%d:%02d" m sec)
+      (format "%d:%02d:%02d" h m sec))))
+
+(defun media-thumbnail-format-size (bytes)
+  "Format BYTES as a short human-readable size (KB / MB / GB)."
+  (cond
+   ((>= bytes (* 1024 1024 1024))
+    (format "%.1f GB" (/ bytes 1024.0 1024.0 1024.0)))
+   ((>= bytes (* 1024 1024))
+    (format "%.0f MB" (/ bytes 1024.0 1024.0)))
+   (t
+    (format "%d KB" (max 1 (/ bytes 1024))))))
+
+(defcustom media-thumbnail-preview-buffer-name " *media-thumbnail-preview*"
+  "Name of the shared buffer used by `media-thumbnail-preview-buffer'.
+
+Prefixed with a space so the buffer stays out of the default
+`buffer-menu' / vertico `switch-to-buffer' lists — the buffer is a
+short-lived reusable render target, not something the user opens by
+name."
+  :type 'string
+  :group 'media-thumbnail)
+
+(defun media-thumbnail-format-header (path)
+  "Return a one-line metadata header string for PATH.
+
+Reads `media-thumbnail-probe-metadata' (shared cache — no extra
+ffprobe per call).  Degrades gracefully: only fields ffprobe
+returned appear in the header; the basename is always present even
+when the probe fails.  Separator style: middle dot in `shadow'
+face; basename in `bold'.  Rendered format:
+
+  basename  ·  1920×1080  ·  1:02:06  ·  h264  ·  aac  ·  500 MB"
+  (let* ((basename (file-name-nondirectory path))
+         (meta (media-thumbnail-probe-metadata path))
+         (width (plist-get meta :width))
+         (height (plist-get meta :height))
+         (duration (plist-get meta :duration))
+         (size (plist-get meta :size))
+         (video-codec (plist-get meta :video-codec))
+         (audio-codec (plist-get meta :audio-codec))
+         (parts
+          (delq nil
+                (list
+                 (propertize basename 'face 'bold)
+                 (and width height (format "%d×%d" width height))
+                 (and duration (media-thumbnail-format-duration duration))
+                 video-codec
+                 audio-codec
+                 (and size (media-thumbnail-format-size size))))))
+    (mapconcat #'identity parts
+               (propertize "  ·  " 'face 'shadow))))
+
+(cl-defun media-thumbnail-preview-buffer (path cache-path
+                                               &key
+                                               buffer
+                                               max-width
+                                               max-height
+                                               (header t))
+  "Return a buffer displaying CACHE-PATH's image with an optional header.
+
+PATH is the source media file — used to build the metadata header.
+CACHE-PATH is the JPEG produced by `media-thumbnail-generate-async'.
+
+Keyword args:
+
+  :buffer      Buffer or name to reuse.  Defaults to
+               `media-thumbnail-preview-buffer-name' — a shared
+               buffer, so successive calls swap content in place
+               instead of accumulating dead buffers.
+  :max-width   Passed through to `create-image :max-width'.  Nil
+               skips the constraint (image renders at natural
+               size).  Set to the display pane's pixel width when
+               known so Emacs downscales oversized JPEGs to fit.
+  :max-height  Same, for `:max-height'.
+  :header      Header policy.
+                 t         — prepend `media-thumbnail-format-header'.
+                 nil       — image only.
+                 function  — call with PATH, insert returned string.
+               Default t."
+  (let* ((buf (get-buffer-create
+               (or buffer media-thumbnail-preview-buffer-name)))
+         (spec (apply #'create-image cache-path 'jpeg nil
+                      (append (when max-width  (list :max-width max-width))
+                              (when max-height (list :max-height max-height))
+                              (list :ascent 'center))))
+         (inhibit-read-only t))
+    (with-current-buffer buf
+      (erase-buffer)
+      (pcase header
+        ('t (insert (media-thumbnail-format-header path) "\n\n"))
+        ((pred functionp) (insert (funcall header path) "\n\n"))
+        (_ nil))
+      (insert-image spec)
+      (goto-char (point-min))
+      (setq-local buffer-read-only t))
+    buf))
+
 (defun media-thumbnail--resolve-seek-time (entry duration)
   "Return a plain-seconds string for ENTRY, or nil if it cannot resolve.
 

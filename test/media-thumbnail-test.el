@@ -506,6 +506,90 @@ consumers issue one ffprobe per file, not two."
         ;; Three lookups, one probe.
         (should (equal probe-calls 1))))))
 
+(ert-deftest media-thumbnail-test-format-duration-short-and-long ()
+  "`media-thumbnail-format-duration' must render MM:SS below one hour
+and HH:MM:SS at/above."
+  (should (equal (media-thumbnail-format-duration 65) "1:05"))
+  (should (equal (media-thumbnail-format-duration 3599) "59:59"))
+  (should (equal (media-thumbnail-format-duration 3600) "1:00:00"))
+  (should (equal (media-thumbnail-format-duration 3725) "1:02:05")))
+
+(ert-deftest media-thumbnail-test-format-size-units ()
+  "`media-thumbnail-format-size' must pick KB / MB / GB by magnitude."
+  (should (equal (media-thumbnail-format-size 512) "1 KB"))
+  (should (equal (media-thumbnail-format-size (* 5 1024 1024)) "5 MB"))
+  (should (equal (media-thumbnail-format-size (* 3 1024 1024 1024)) "3.0 GB")))
+
+(ert-deftest media-thumbnail-test-format-header-composes-fields ()
+  "`media-thumbnail-format-header' must combine every metadata field
+returned by the probe, skipping fields the probe omitted, in the
+documented order (basename, resolution, duration, video, audio, size)."
+  (cl-letf (((symbol-function 'media-thumbnail-probe-metadata)
+             (lambda (_)
+               '(:duration 3725.0 :size 524288000 :width 1920
+                 :height 1080 :video-codec "h264" :audio-codec "aac"))))
+    (let ((header (media-thumbnail-format-header "/dir/big.mkv")))
+      (should (string-match-p "big\\.mkv" header))
+      (should (string-match-p "1920×1080" header))
+      (should (string-match-p "1:02:05" header))
+      (should (string-match-p "h264" header))
+      (should (string-match-p "aac" header))
+      (should (string-match-p "500 MB" header)))))
+
+(ert-deftest media-thumbnail-test-format-header-omits-missing-fields ()
+  "Fields the probe returns nil for must be dropped, not shown blank."
+  (cl-letf (((symbol-function 'media-thumbnail-probe-metadata)
+             (lambda (_) '(:duration 30.0))))
+    (let ((header (media-thumbnail-format-header "/x/audio.mp3")))
+      (should (string-match-p "audio\\.mp3" header))
+      (should (string-match-p "0:30" header))
+      ;; No resolution/codec fields — separators between them must
+      ;; not multiply.
+      (should-not (string-match-p "×" header))
+      (should-not (string-match-p "h264" header)))))
+
+(ert-deftest media-thumbnail-test-preview-buffer-header-policy ()
+  "`media-thumbnail-preview-buffer' must honour :header — t inserts
+the default formatter, nil skips it, a function is called on PATH.
+
+Uses stubs for `create-image' and `insert-image' because the batch
+Emacs used for tests may lack JPEG support; the image path itself
+isn't what we're covering here — the header policy is."
+  (cl-letf (((symbol-function 'create-image)
+             (lambda (&rest _) '(image :type jpeg :file "stub")))
+            ((symbol-function 'insert-image)
+             (lambda (_spec) (insert "[IMAGE]")))
+            ((symbol-function 'media-thumbnail-format-header)
+             (lambda (_path) "DEFAULT-HEADER")))
+    ;; :header t → default formatter runs.
+    (let ((buf (media-thumbnail-preview-buffer
+                "/x/a.mp4" "/tmp/a.jpg"
+                :buffer " *mt-test-a*"
+                :header t)))
+      (should (string-match-p
+               "DEFAULT-HEADER"
+               (with-current-buffer buf (buffer-string))))
+      (kill-buffer buf))
+    ;; :header nil → no header text.
+    (let ((buf (media-thumbnail-preview-buffer
+                "/x/a.mp4" "/tmp/a.jpg"
+                :buffer " *mt-test-b*"
+                :header nil)))
+      (should-not (string-match-p
+                   "DEFAULT-HEADER"
+                   (with-current-buffer buf (buffer-string))))
+      (kill-buffer buf))
+    ;; :header FUNCTION → function's return goes in.
+    (let ((buf (media-thumbnail-preview-buffer
+                "/x/a.mp4" "/tmp/a.jpg"
+                :buffer " *mt-test-c*"
+                :header (lambda (path)
+                          (format "CUSTOM:%s" path)))))
+      (should (string-match-p
+               "CUSTOM:/x/a\\.mp4"
+               (with-current-buffer buf (buffer-string))))
+      (kill-buffer buf))))
+
 ;;; End of test file.
 (provide 'media-thumbnail-test)
 ;;; media-thumbnail-test.el ends here
