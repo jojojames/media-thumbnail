@@ -297,9 +297,14 @@ value differs from the cached one."
           ;; Command is not stored on the queue — dired shares the
           ;; same ffmpeg pipeline as the single-shot async path so the
           ;; drain step is a plain call into
-          ;; `media-thumbnail-generate-async'.
+          ;; `media-thumbnail-generate-async'.  `:host-buf' pins the
+          ;; enqueueing dired buffer so `media-thumbnail--convert' can
+          ;; route the eventual redisplay into the right place; the
+          ;; drain runs from a global timer whose `current-buffer' at
+          ;; fire time is whatever the user has focused, not the
+          ;; enqueueing buffer.
           (media-thumbnail--enqueue
-           `(:image-spec ,image-spec :file ,file))
+           `(:image-spec ,image-spec :file ,file :host-buf ,(current-buffer)))
           image-spec))))
    (t nil)))
 
@@ -342,9 +347,8 @@ without rescheduling, so an idle session leaves no live timer."
              (< (hash-table-count media-thumbnail--async-callbacks)
                 media-thumbnail-max-processes))
     (pcase-let* ((convert-request (media-thumbnail--dequeue))
-                 (`(:image-spec ,image-spec :file ,file)
-                  convert-request)
-                 (host-buf (current-buffer)))
+                 (`(:image-spec ,image-spec :file ,file :host-buf ,host-buf)
+                  convert-request))
       (media-thumbnail--log "Dispatching: %S %s" image-spec file)
       (media-thumbnail-generate-async
        file
@@ -560,7 +564,7 @@ Callers do not need their own dedup / in-flight bookkeeping."
   "Call `redisplay' and reset `media-thumbnail--redisplay-timer'."
   (media-thumbnail--log "Calling redisplay!")
   (while media-thumbnail--specs-to-flush
-    (pcase-let* ((`(:image-spec ,image-spec :file ,file)
+    (pcase-let* ((`(:image-spec ,image-spec :file ,file . ,_)
                   (car media-thumbnail--specs-to-flush)))
       (media-thumbnail--log
        "-----\nFlushing: %S\nFile: %s\n-----" image-spec file)

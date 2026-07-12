@@ -346,6 +346,50 @@ Emacs processes)."
         (cancel-timer media-thumbnail--convert-timer))
       (setq media-thumbnail--convert-timer nil))))
 
+(ert-deftest media-thumbnail-test-convert-uses-queue-host-buf ()
+  "Bug 10: `--convert' runs from a global timer whose `current-buffer'
+at fire time is arbitrary.  It must read the `:host-buf' slot off the
+queue item (captured at push time from the enqueueing dired buffer)
+instead of `(current-buffer)'.
+
+Simulates: buffer H enqueues a request, then buffer OTHER is made
+current (as would happen when the global timer fires), then
+`--convert' runs.  Assert that the mocked `generate-async' saw H
+as the host-buf, not OTHER."
+  (media-thumbnail-test--with-temp-buffers (h other)
+    (let ((media-thumbnail--queue nil)
+          (media-thumbnail--queue-tail nil)
+          (media-thumbnail--convert-timer nil)
+          (media-thumbnail-max-processes 10)
+          (media-thumbnail--async-callbacks (make-hash-table :test 'equal))
+          captured-host)
+      (unwind-protect
+          (progn
+            (with-current-buffer h
+              (media-thumbnail--enqueue
+               `(:image-spec dummy :file "x.mp4" :host-buf ,(current-buffer))))
+            (with-current-buffer other
+              (cl-letf (((symbol-function 'media-thumbnail-generate-async)
+                         (lambda (_file &rest args)
+                           (let ((cb (plist-get args :callback)))
+                             ;; Fire cb with a synthetic dying-generation:
+                             ;; success-p t so the callback body executes.
+                             ;; The callback's own `buffer-live-p host-buf'
+                             ;; guard reads the host-buf captured in
+                             ;; --convert's closure; we prove it by having
+                             ;; the callback record which buffer it entered.
+                             (funcall cb "x.mp4" "/tmp/x.jpg" t)
+                             (setq captured-host
+                                   (buffer-local-value
+                                    'media-thumbnail--specs-to-flush h))))))
+                (media-thumbnail--convert)))
+            (should captured-host)
+            (should-not (buffer-local-value
+                         'media-thumbnail--specs-to-flush other)))
+        (when (timerp media-thumbnail--convert-timer)
+          (cancel-timer media-thumbnail--convert-timer))
+        (setq media-thumbnail--convert-timer nil)))))
+
 ;;; End of test file.
 (provide 'media-thumbnail-test)
 ;;; media-thumbnail-test.el ends here
