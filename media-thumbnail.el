@@ -332,7 +332,14 @@ holds items.  When the queue is empty on entry, the function exits
 without rescheduling, so an idle session leaves no live timer."
   (setq media-thumbnail--convert-timer nil)
   (when (and media-thumbnail--queue
-             (< (length (process-list))
+             ;; Cap in-flight against our own generations, not the
+             ;; global `process-list' — an LSP-heavy user might have
+             ;; 30+ language-server processes running and never see
+             ;; the thumbnail queue drain otherwise.  Each entry in
+             ;; `--async-callbacks' corresponds to one in-flight
+             ;; ffmpeg pipeline (added by dispatch, removed by
+             ;; `--fire-callbacks').
+             (< (hash-table-count media-thumbnail--async-callbacks)
                 media-thumbnail-max-processes))
     (pcase-let* ((convert-request (media-thumbnail--dequeue))
                  (`(:image-spec ,image-spec :file ,file)

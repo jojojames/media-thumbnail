@@ -291,6 +291,61 @@ and the assertion for the pre-async state fails."
           (should fired))
       (delete-directory tmp-cache t))))
 
+(ert-deftest media-thumbnail-test-convert-caps-on-own-inflight ()
+  "Bug 9: `--convert' must gate on entries in
+`media-thumbnail--async-callbacks' (our own in-flight count) rather
+than the global `process-list' size.  Unrelated processes (LSP, git,
+etc.) should not starve the thumbnail queue.
+
+Simulates 5 unrelated processes via `cl-letf'-mocked `process-list',
+seeds `--async-callbacks' with 2 sentinel entries, sets max=2, pushes
+a queue item, and asserts `--convert' does NOT drain it — the guard
+should trip on our own count (2 == max) even though `process-list'
+returns just 5."
+  (let ((media-thumbnail--queue nil)
+        (media-thumbnail--queue-tail nil)
+        (media-thumbnail--convert-timer nil)
+        (media-thumbnail-max-processes 2)
+        dispatched)
+    (puthash "sentinel-a" nil media-thumbnail--async-callbacks)
+    (puthash "sentinel-b" nil media-thumbnail--async-callbacks)
+    (media-thumbnail--enqueue '(:image-spec dummy :file "should-not-run.mp4"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-list)
+                   (lambda () (make-list 5 'fake-proc)))
+                  ((symbol-function 'media-thumbnail-generate-async)
+                   (lambda (&rest _) (setq dispatched t))))
+          (media-thumbnail--convert)
+          (should (null dispatched))
+          ;; Item stays on the queue for the next drain attempt.
+          (should (equal (length media-thumbnail--queue) 1)))
+      (remhash "sentinel-a" media-thumbnail--async-callbacks)
+      (remhash "sentinel-b" media-thumbnail--async-callbacks)
+      (when (timerp media-thumbnail--convert-timer)
+        (cancel-timer media-thumbnail--convert-timer))
+      (setq media-thumbnail--convert-timer nil))))
+
+(ert-deftest media-thumbnail-test-convert-dispatches-when-under-cap ()
+  "Bug 9 companion: with own in-flight count below max, `--convert'
+should still dispatch even if `process-list' is huge (unrelated
+Emacs processes)."
+  (let ((media-thumbnail--queue nil)
+        (media-thumbnail--queue-tail nil)
+        (media-thumbnail--convert-timer nil)
+        (media-thumbnail-max-processes 20)
+        dispatched)
+    (media-thumbnail--enqueue '(:image-spec dummy :file "run.mp4"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-list)
+                   (lambda () (make-list 100 'fake-proc)))
+                  ((symbol-function 'media-thumbnail-generate-async)
+                   (lambda (&rest _) (setq dispatched t))))
+          (media-thumbnail--convert)
+          (should dispatched))
+      (when (timerp media-thumbnail--convert-timer)
+        (cancel-timer media-thumbnail--convert-timer))
+      (setq media-thumbnail--convert-timer nil))))
+
 ;;; End of test file.
 (provide 'media-thumbnail-test)
 ;;; media-thumbnail-test.el ends here
