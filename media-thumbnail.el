@@ -81,7 +81,7 @@
   :type 'number
   :group 'media-thumbnail)
 
-(defcustom media-thumbnail-cache-dir (format "%scache/" user-emacs-directory)
+(defcustom media-thumbnail-cache-dir (expand-file-name "cache/media/" user-emacs-directory)
   "Where thumbnails are located."
   :type 'string
   :group 'media-thumbnail)
