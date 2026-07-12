@@ -37,6 +37,12 @@
 (declare-function dired-get-filename "dired")
 (declare-function dired-move-to-filename "dired")
 (declare-function dired-do-redisplay "dired")
+;; `image-flush' and `clear-image-cache' are shipped in image.el (already
+;; `require'd at the top of this file), but the byte compiler doesn't
+;; always follow the `require' — `declare-function' pins the lookup so
+;; the warnings stay quiet.
+(declare-function image-flush "image" (spec &optional frame))
+(declare-function clear-image-cache "image" (&optional filter animation-cache))
 
 ;;
 ;; (@* "Macros" )
@@ -110,12 +116,15 @@
     magit-format-patch)
   "A list of commands that will trigger a refresh of `dired'.
 
-The command can be an alist with the CDR of the alist being the amount of time
-to wait to refresh the sidebar after the CAR of the alist is called.
+Each entry is either a bare command symbol (refresh immediately) or a
+cons (COMMAND . DELAY-SECONDS) — the CDR is the seconds to wait after
+COMMAND runs before triggering the refresh.
 
-Set this to nil or set `media-thumbnail-special-refresh-commands' to nil
-to disable automatic refresh when a special command is triggered."
-  :type 'list
+Set to nil to disable automatic refresh on special commands."
+  :type '(repeat (choice (symbol :tag "Command")
+                         (cons :tag "Command with delay"
+                               (symbol :tag "Command")
+                               (number :tag "Delay (seconds)"))))
   :group 'media-thumbnail)
 
 (defcustom media-thumbnail-ignore-aspect-ratio nil
