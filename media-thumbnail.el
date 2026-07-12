@@ -252,7 +252,12 @@ of videos doesn't spawn a subprocess storm."
                  (media-thumbnail--log "Setting up redisplay!")
                  (setq-local
                   media-thumbnail--redisplay-timer
-                  (run-with-timer 0.1 nil #'media-thumbnail--redisplay)))))))))))
+                  (run-with-timer
+                   0.1 nil
+                   (lambda ()
+                     (when (buffer-live-p host-buf)
+                       (with-current-buffer host-buf
+                         (media-thumbnail--redisplay))))))))))))))))
 
 (defun media-thumbnail--fire-callbacks (file cache-path success-p)
   "Fire every pending callback registered for FILE, then clear the entry."
