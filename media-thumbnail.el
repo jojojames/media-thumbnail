@@ -153,8 +153,14 @@ itself.  Set to a single-element list to disable the retry chain."
 ;; (@* "Variables" )
 ;;
 
-(defvar media-thumbnail--handled-files '()
-  "Files already processed by `media-thumbnail'.")
+(defvar media-thumbnail--handled-files (make-hash-table :test 'equal)
+  "Files already processed by `media-thumbnail'.
+
+Was a plain list; the `member' guard in `media-thumbnail-for-file'
+scaled quadratically with the number of unique videos a session had
+enumerated (dired refresh on a 500-video directory ran ~125k `equal'
+comparisons).  Hash table membership is O(1), so the guard is
+now constant-time regardless of how many videos have been touched.")
 
 (defvar media-thumbnail--queue '()
   "To be processed by `media-thumbnail'.")
@@ -204,10 +210,10 @@ requests for the same file into a single ffmpeg pipeline.")
    ((member (downcase (file-name-extension file))
             media-thumbnail-video-exts)
     (let ((cache-path (media-thumbnail-get-cache-path file)))
-      (if (or (member file media-thumbnail--handled-files)
+      (if (or (gethash file media-thumbnail--handled-files)
               (file-exists-p cache-path))
           (media-thumbnail--create-image cache-path)
-        (push file media-thumbnail--handled-files)
+        (puthash file t media-thumbnail--handled-files)
         (let ((image-spec (media-thumbnail--create-image cache-path)))
           ;; Command is not stored on the queue — dired shares the
           ;; same ffmpeg pipeline as the single-shot async path so the
@@ -475,7 +481,7 @@ Callers do not need their own dedup / in-flight bookkeeping."
   (setq media-thumbnail--specs-to-flush nil)
   (setq media-thumbnail--redisplay-timer nil)
   (setq media-thumbnail--queue nil)
-  (setq media-thumbnail--handled-files nil)
+  (clrhash media-thumbnail--handled-files)
   (when (file-exists-p media-thumbnail-cache-dir)
     (message "Deleting %s directory." media-thumbnail-cache-dir)
     (delete-directory media-thumbnail-cache-dir t t)))

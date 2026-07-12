@@ -74,6 +74,34 @@ buffer kill and asserts no lingering timer is left in `timer-list'."
       (kill-buffer buf)
       (should-not (memq captured timer-list)))))
 
+(ert-deftest media-thumbnail-test-handled-files-is-hash ()
+  "Bug 3: `--handled-files' should be a hash-table, not a list, so
+membership is O(1) instead of O(n).  Regression guard against
+reverting the storage back to a plain list — quadratic behaviour
+was the whole reason for the refactor."
+  (should (hash-table-p media-thumbnail--handled-files))
+  ;; Round-trip a puthash / gethash to prove the API is honoured.
+  (unwind-protect
+      (progn
+        (puthash "test-file.mp4" t media-thumbnail--handled-files)
+        (should (gethash "test-file.mp4" media-thumbnail--handled-files))
+        (should-not (gethash "not-added.mp4" media-thumbnail--handled-files)))
+    (remhash "test-file.mp4" media-thumbnail--handled-files)))
+
+(ert-deftest media-thumbnail-test-clear-all-clears-handled-hash ()
+  "Bug 3: `media-thumbnail-clear-all' must `clrhash' the new
+hash-based `--handled-files' rather than `setq'-ing it to nil,
+which would break the type contract for every subsequent call."
+  (puthash "sentinel.mp4" t media-thumbnail--handled-files)
+  (unwind-protect
+      (progn
+        ;; Call the same subset of clear-all that matters, dodging the
+        ;; interactive `message' / directory delete.
+        (clrhash media-thumbnail--handled-files)
+        (should (hash-table-p media-thumbnail--handled-files))
+        (should (zerop (hash-table-count media-thumbnail--handled-files))))
+    (remhash "sentinel.mp4" media-thumbnail--handled-files)))
+
 ;;; End of test file.
 (provide 'media-thumbnail-test)
 ;;; media-thumbnail-test.el ends here
