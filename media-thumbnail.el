@@ -449,6 +449,22 @@ the retry chain."
        ,(shell-quote-argument cache-path))
      " ")))
 
+(defun media-thumbnail--try-cmd (cmd file cache-path on-fail)
+  "Spawn CMD; on success fire pending callbacks, on failure call ON-FAIL.
+
+Success is defined the same way across every stage of the pipeline:
+`media-thumbnail--spawn' exit-ok AND CACHE-PATH exists non-empty on
+disk.  Extracted here so `media-thumbnail--generate' and
+`media-thumbnail--ffmpeg-frame-chain' don't repeat the pattern, and
+so that any future guard on \"was the output actually written\"
+lands in one place."
+  (media-thumbnail--spawn
+   cmd
+   (lambda (exit-ok)
+     (if (and exit-ok (media-thumbnail--file-non-empty-p cache-path))
+         (media-thumbnail--fire-callbacks file cache-path t)
+       (funcall on-fail)))))
+
 (defun media-thumbnail--ffmpeg-frame-chain (file cache-path size ignore-aspect-ratio seek-times)
   "Try to decode a frame from FILE, walking SEEK-TIMES until one succeeds.
 
@@ -460,17 +476,16 @@ first successful attempt fires the pending callbacks with SUCCESS-P
    ((null seek-times)
     (media-thumbnail--fire-callbacks file cache-path nil))
    (t
-    (media-thumbnail--spawn
+    (media-thumbnail--try-cmd
      (media-thumbnail-ffmpeg-frame-cmd
       file cache-path
       :size size
       :ignore-aspect-ratio ignore-aspect-ratio
       :seek-time (car seek-times))
-     (lambda (frame-ok)
-       (if (and frame-ok (media-thumbnail--file-non-empty-p cache-path))
-           (media-thumbnail--fire-callbacks file cache-path t)
-         (media-thumbnail--ffmpeg-frame-chain
-          file cache-path size ignore-aspect-ratio (cdr seek-times))))))))
+     file cache-path
+     (lambda ()
+       (media-thumbnail--ffmpeg-frame-chain
+        file cache-path size ignore-aspect-ratio (cdr seek-times)))))))
 
 (defun media-thumbnail--generate (file cache-path size ignore-aspect-ratio)
   "Two-step ffmpeg pipeline: embedded poster, then decoded-frame chain.
@@ -483,14 +498,13 @@ attached-picture stream, or ffmpeg failed to write it), falls through
 to `media-thumbnail--ffmpeg-frame-chain', which walks
 `media-thumbnail-ffmpeg-seek-times' until one seek position yields a
 decodable frame or the list is exhausted."
-  (media-thumbnail--spawn
+  (media-thumbnail--try-cmd
    (media-thumbnail-ffmpeg-poster-cmd file cache-path)
-   (lambda (poster-ok)
-     (if (and poster-ok (media-thumbnail--file-non-empty-p cache-path))
-         (media-thumbnail--fire-callbacks file cache-path t)
-       (media-thumbnail--ffmpeg-frame-chain
-        file cache-path size ignore-aspect-ratio
-        media-thumbnail-ffmpeg-seek-times)))))
+   file cache-path
+   (lambda ()
+     (media-thumbnail--ffmpeg-frame-chain
+      file cache-path size ignore-aspect-ratio
+      media-thumbnail-ffmpeg-seek-times))))
 
 ;;;###autoload
 (cl-defun media-thumbnail-generate-async (file &key size ignore-aspect-ratio callback)

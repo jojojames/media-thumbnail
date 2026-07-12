@@ -204,6 +204,64 @@ subsequent push does not `setcdr' onto a garbage cons."
     (media-thumbnail--enqueue :again)
     (should (eq (media-thumbnail--dequeue) :again))))
 
+(ert-deftest media-thumbnail-test-try-cmd-success-fires-callbacks ()
+  "Bug 7: `--try-cmd' must fire pending callbacks with SUCCESS-P=t
+when the underlying spawn exits ok AND the cache path lands non-
+empty on disk.  Verified by stubbing `--spawn' and pointing at a
+throw-away temp file."
+  (let ((tmp (make-temp-file "mt-try-" nil ".jpg"))
+        callback-args)
+    (unwind-protect
+        (progn
+          (write-region "x" nil tmp nil 'silent)
+          (puthash "sentinel-file"
+                   (list (lambda (file cache-path success-p)
+                           (setq callback-args
+                                 (list file cache-path success-p))))
+                   media-thumbnail--async-callbacks)
+          (cl-letf (((symbol-function 'media-thumbnail--spawn)
+                     (lambda (_cmd on-exit) (funcall on-exit t))))
+            (media-thumbnail--try-cmd
+             "fake-cmd" "sentinel-file" tmp
+             (lambda () (error "on-fail should not run"))))
+          (should (equal callback-args (list "sentinel-file" tmp t))))
+      (delete-file tmp)
+      (remhash "sentinel-file" media-thumbnail--async-callbacks))))
+
+(ert-deftest media-thumbnail-test-try-cmd-failure-invokes-on-fail ()
+  "Bug 7: `--try-cmd' must invoke ON-FAIL when the spawn exits ok
+but the cache file is missing or zero-byte — the guard against
+`ffmpeg -y' truncating output before erroring."
+  (let ((tmp (concat (make-temp-file "mt-try-empty-" nil) ".jpg"))
+        (on-fail-called nil))
+    (unwind-protect
+        (progn
+          ;; Ensure the tmp path does NOT exist on disk yet.
+          (when (file-exists-p tmp) (delete-file tmp))
+          (cl-letf (((symbol-function 'media-thumbnail--spawn)
+                     (lambda (_cmd on-exit) (funcall on-exit t))))
+            (media-thumbnail--try-cmd
+             "fake-cmd" "any" tmp
+             (lambda () (setq on-fail-called t))))
+          (should on-fail-called))
+      (when (file-exists-p tmp) (delete-file tmp)))))
+
+(ert-deftest media-thumbnail-test-try-cmd-non-zero-exit-invokes-on-fail ()
+  "Bug 7: `--try-cmd' must invoke ON-FAIL when the underlying spawn
+exit-ok is nil, regardless of what's on disk."
+  (let ((tmp (make-temp-file "mt-try-nonempty-" nil ".jpg"))
+        (on-fail-called nil))
+    (unwind-protect
+        (progn
+          (write-region "content" nil tmp nil 'silent)
+          (cl-letf (((symbol-function 'media-thumbnail--spawn)
+                     (lambda (_cmd on-exit) (funcall on-exit nil))))
+            (media-thumbnail--try-cmd
+             "fake-cmd" "any" tmp
+             (lambda () (setq on-fail-called t))))
+          (should on-fail-called))
+      (delete-file tmp))))
+
 ;;; End of test file.
 (provide 'media-thumbnail-test)
 ;;; media-thumbnail-test.el ends here
