@@ -149,6 +149,12 @@ to disable automatic refresh when a special command is triggered."
 (defvar-local media-thumbnail--specs-to-flush nil
   "Image specs to flush to refresh images upon convert finish.")
 
+(defvar media-thumbnail--async-callbacks (make-hash-table :test 'equal)
+  "Hash table mapping in-flight FILE → list of pending callbacks.
+
+Consulted by `media-thumbnail-generate-async' to coalesce concurrent
+requests for the same file into a single ffmpegthumbnailer subprocess.")
+
 ;;
 ;; (@* "Implementation" )
 ;;
@@ -158,21 +164,31 @@ to disable automatic refresh when a special command is triggered."
   (format "%s%s.jpg" (expand-file-name media-thumbnail-cache-dir)
           (file-name-base file)))
 
-(defun media-thumbnail-ffmpegthumbnailer-cmd (file)
-  "Return a command to generate a thumbnail for FILE."
-  (mapconcat
-   (lambda (x) x)
-   `(,media-thumbnail-ffmpegthumbnailer-executable
-     "-m"
-     ,@(when media-thumbnail-ignore-aspect-ratio '("-a"))
-     "-i"
-     ,(shell-quote-argument file)
-     "-o"
-     ,(shell-quote-argument (media-thumbnail-get-cache-path file))
-     "-q" "10" ;; Max quality for jpeg
-     "-s"
-     ,(number-to-string media-thumbnail-size))
-   " "))
+(cl-defun media-thumbnail-ffmpegthumbnailer-cmd (file &key size ignore-aspect-ratio)
+  "Return a command to generate a thumbnail for FILE.
+
+SIZE overrides `media-thumbnail-size' (pixels, longest edge; 0 = source
+size).  IGNORE-ASPECT-RATIO overrides
+`media-thumbnail-ignore-aspect-ratio'.  Both default to their
+package-wide defcustoms when omitted, so the single-arg call still
+works for existing callers."
+  (let ((size (or size media-thumbnail-size))
+        (ignore-aspect-ratio (if ignore-aspect-ratio
+                                 ignore-aspect-ratio
+                               media-thumbnail-ignore-aspect-ratio)))
+    (mapconcat
+     (lambda (x) x)
+     `(,media-thumbnail-ffmpegthumbnailer-executable
+       "-m"
+       ,@(when ignore-aspect-ratio '("-a"))
+       "-i"
+       ,(shell-quote-argument file)
+       "-o"
+       ,(shell-quote-argument (media-thumbnail-get-cache-path file))
+       "-q" "10" ;; Max quality for jpeg
+       "-s"
+       ,(number-to-string size))
+     " ")))
 
 ;;;###autoload
 (defun media-thumbnail-for-file (file)
@@ -235,6 +251,61 @@ to disable automatic refresh when a special command is triggered."
         (setq-local
          media-thumbnail--redisplay-timer
          (run-with-timer 3 nil 'media-thumbnail--redisplay))))))
+
+;;;###autoload
+(cl-defun media-thumbnail-generate-async (file &key size ignore-aspect-ratio callback)
+  "Generate a thumbnail for FILE via ffmpegthumbnailer, asynchronously.
+
+Returns the cache path where the JPEG will land.
+
+SIZE and IGNORE-ASPECT-RATIO override `media-thumbnail-size' and
+`media-thumbnail-ignore-aspect-ratio' for this call, letting callers
+size the thumbnail to fit their preview surface without mutating
+package-wide defcustoms.
+
+CALLBACK, if non-nil, is invoked with (FILE CACHE-PATH SUCCESS-P) once
+the subprocess completes.  When the JPEG already exists on disk,
+CALLBACK is invoked immediately with SUCCESS-P = t and no subprocess
+is spawned.
+
+Concurrent requests for the same FILE are coalesced through
+`media-thumbnail--async-callbacks': subsequent calls append their
+callback to the pending list and share the in-flight subprocess.
+Callers do not need their own dedup / in-flight bookkeeping."
+  (unless (file-exists-p media-thumbnail-cache-dir)
+    (make-directory media-thumbnail-cache-dir t))
+  (let ((cache-path (media-thumbnail-get-cache-path file)))
+    (cond
+     ((file-exists-p cache-path)
+      (when callback (funcall callback file cache-path t))
+      cache-path)
+     ((gethash file media-thumbnail--async-callbacks)
+      (when callback
+        (puthash file
+                 (append (gethash file media-thumbnail--async-callbacks)
+                         (list callback))
+                 media-thumbnail--async-callbacks))
+      cache-path)
+     (t
+      (puthash file (if callback (list callback) nil)
+               media-thumbnail--async-callbacks)
+      (let* ((cmd (media-thumbnail-ffmpegthumbnailer-cmd
+                   file :size size :ignore-aspect-ratio ignore-aspect-ratio))
+             (name (format "media-thumbnail %s" (file-name-nondirectory file)))
+             (proc (start-process-shell-command name nil cmd)))
+        (media-thumbnail--log "Async: %s" cmd)
+        (set-process-sentinel
+         proc
+         (lambda (proc _event)
+           (when (memq (process-status proc) '(exit signal))
+             (let ((callbacks (gethash file media-thumbnail--async-callbacks))
+                   (success-p (and (eq (process-status proc) 'exit)
+                                   (zerop (process-exit-status proc))
+                                   (file-exists-p cache-path))))
+               (remhash file media-thumbnail--async-callbacks)
+               (dolist (cb callbacks)
+                 (ignore-errors (funcall cb file cache-path success-p)))))))
+      cache-path)))))
 
 (defun media-thumbnail--redisplay (&rest _)
   "Call `redisplay' and reset `media-thumbnail--redisplay-timer'."
