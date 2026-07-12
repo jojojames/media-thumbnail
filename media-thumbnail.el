@@ -184,6 +184,16 @@ and on `kill-buffer-hook' — declared here so the disable path can
 Consulted by `media-thumbnail-generate-async' to coalesce concurrent
 requests for the same file into a single ffmpeg pipeline.")
 
+(defvar media-thumbnail--cache-dir-ensured nil
+  "Cache-dir path we last verified exists on disk, or nil.
+
+Used by `media-thumbnail--ensure-cache-dir' to skip the `file-exists-p'
+syscall on every generate-async call once we've already created the
+directory this session — an N=500-video dired refresh previously did
+500+ redundant `file-exists-p' calls in a hot loop.  Invalidated by
+`media-thumbnail-clear-all' when the directory is deleted, and by any
+runtime change to `media-thumbnail-cache-dir' (compared by value).")
+
 ;;
 ;; (@* "Implementation" )
 ;;
@@ -193,11 +203,24 @@ requests for the same file into a single ffmpeg pipeline.")
   (format "%s%s.jpg" (expand-file-name media-thumbnail-cache-dir)
           (file-name-base file)))
 
+(defun media-thumbnail--ensure-cache-dir ()
+  "Ensure `media-thumbnail-cache-dir' exists on disk.
+
+Memoized via `media-thumbnail--cache-dir-ensured' so repeated calls
+in a hot loop (dired refresh, batch enqueues) skip the syscall once
+the directory has been verified this session.  Handles a runtime
+change to `media-thumbnail-cache-dir' by re-checking when the current
+value differs from the cached one."
+  (unless (equal media-thumbnail--cache-dir-ensured
+                 media-thumbnail-cache-dir)
+    (unless (file-exists-p media-thumbnail-cache-dir)
+      (make-directory media-thumbnail-cache-dir t))
+    (setq media-thumbnail--cache-dir-ensured
+          media-thumbnail-cache-dir)))
+
 ;;;###autoload
 (defun media-thumbnail-for-file (file)
   "Return image spec for FILE."
-  (unless (file-exists-p media-thumbnail-cache-dir)
-    (make-directory media-thumbnail-cache-dir))
   (cond
    ((or (string-match-p "^\\._" (file-name-base file))
         (not (file-name-extension file)))
@@ -424,8 +447,7 @@ Concurrent requests for the same FILE are coalesced through
 `media-thumbnail--async-callbacks': subsequent calls append their
 callback to the pending list and share the in-flight pipeline.
 Callers do not need their own dedup / in-flight bookkeeping."
-  (unless (file-exists-p media-thumbnail-cache-dir)
-    (make-directory media-thumbnail-cache-dir t))
+  (media-thumbnail--ensure-cache-dir)
   (let ((cache-path (media-thumbnail-get-cache-path file)))
     (cond
      ((file-exists-p cache-path)
@@ -482,6 +504,7 @@ Callers do not need their own dedup / in-flight bookkeeping."
   (setq media-thumbnail--redisplay-timer nil)
   (setq media-thumbnail--queue nil)
   (clrhash media-thumbnail--handled-files)
+  (setq media-thumbnail--cache-dir-ensured nil)
   (when (file-exists-p media-thumbnail-cache-dir)
     (message "Deleting %s directory." media-thumbnail-cache-dir)
     (delete-directory media-thumbnail-cache-dir t t)))

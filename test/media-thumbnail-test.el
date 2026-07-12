@@ -102,6 +102,47 @@ which would break the type contract for every subsequent call."
         (should (zerop (hash-table-count media-thumbnail--handled-files))))
     (remhash "sentinel.mp4" media-thumbnail--handled-files)))
 
+(ert-deftest media-thumbnail-test-ensure-cache-dir-memoizes ()
+  "Bug 4: `--ensure-cache-dir' must skip its `file-exists-p' check
+after the first successful verification.  Verified by counting
+`file-exists-p' invocations across two back-to-back calls with an
+unchanged `media-thumbnail-cache-dir'."
+  (let ((media-thumbnail--cache-dir-ensured nil)
+        (tmp (make-temp-file "mt-cache-" t))
+        (calls 0))
+    (unwind-protect
+        (let ((media-thumbnail-cache-dir tmp))
+          (cl-letf* ((orig (symbol-function 'file-exists-p))
+                     ((symbol-function 'file-exists-p)
+                      (lambda (path)
+                        (when (equal path tmp) (cl-incf calls))
+                        (funcall orig path))))
+            (media-thumbnail--ensure-cache-dir)
+            (media-thumbnail--ensure-cache-dir)
+            (media-thumbnail--ensure-cache-dir))
+          (should (equal calls 1))
+          (should (equal media-thumbnail--cache-dir-ensured tmp)))
+      (delete-directory tmp t))))
+
+(ert-deftest media-thumbnail-test-ensure-cache-dir-reruns-on-change ()
+  "Bug 4: memoization must invalidate when `media-thumbnail-cache-dir'
+is rebound at runtime, otherwise a user who moves the cache mid-
+session ends up with `--ensure' silently short-circuiting past the
+new location."
+  (let ((media-thumbnail--cache-dir-ensured nil)
+        (a (make-temp-file "mt-cache-a-" t))
+        (b (make-temp-file "mt-cache-b-" t)))
+    (unwind-protect
+        (progn
+          (let ((media-thumbnail-cache-dir a))
+            (media-thumbnail--ensure-cache-dir)
+            (should (equal media-thumbnail--cache-dir-ensured a)))
+          (let ((media-thumbnail-cache-dir b))
+            (media-thumbnail--ensure-cache-dir)
+            (should (equal media-thumbnail--cache-dir-ensured b))))
+      (delete-directory a t)
+      (delete-directory b t))))
+
 ;;; End of test file.
 (provide 'media-thumbnail-test)
 ;;; media-thumbnail-test.el ends here
