@@ -19,7 +19,7 @@ videos. It also has an optional mode to add thumbnails to ~Dired~.
 #+end_src
 * Dependencies
 #+begin_src sh :tangle yes
-brew install ffmpegthumbnailer # Used for videos.
+brew install ffmpeg # Used for videos.
 #+end_src
 * Installation
 : M-x package-install RET media-thumbnail RET

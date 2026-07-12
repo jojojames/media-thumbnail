@@ -123,33 +123,17 @@ to disable automatic refresh when a special command is triggered."
   :type 'boolean
   :group 'media-thumbnail)
 
-(defcustom media-thumbnail-ffmpegthumbnailer-executable "ffmpegthumbnailer"
-  "Location of ffmpegthumbnailer."
-  :type 'string
-  :group 'media-thumbnail)
-
 (defcustom media-thumbnail-ffmpeg-executable "ffmpeg"
-  "Location of the ffmpeg binary used by the `ffmpeg' generator."
+  "Location of the ffmpeg binary."
   :type 'string
   :group 'media-thumbnail)
 
 (defcustom media-thumbnail-generator 'ffmpeg
   "Backend used to generate video thumbnails.
 
-`ffmpeg' — invokes `ffmpeg' directly in a two-step pipeline: first try
-to extract an embedded cover picture; if that fails or the source has
-no attached picture, decode a single frame at
-`media-thumbnail-ffmpeg-seek-time'.  Uses whatever codec support the
-system `ffmpeg' provides, which is generally more current than
-`ffmpegthumbnailer's bundled decoders — the default because that
-tracks the modern codec set that fails on many `ffmpegthumbnailer'
-builds (AV1, HEVC 10-bit, some proprietary containers).
-
-`ffmpegthumbnailer' — invokes the legacy `ffmpegthumbnailer' binary in
-a single shot.  Faster (one process) but its decoder support lags
-behind ffmpeg."
-  :type '(choice (const :tag "ffmpeg (2-step: embedded cover then frame)" ffmpeg)
-                 (const :tag "ffmpegthumbnailer (legacy)" ffmpegthumbnailer))
+Only `ffmpeg' is supported.  Retained as a defcustom so a future
+alternative backend can be added without breaking existing configs."
+  :type '(choice (const :tag "ffmpeg (2-step: embedded cover then frame)" ffmpeg))
   :group 'media-thumbnail)
 
 (defcustom media-thumbnail-ffmpeg-seek-times '("5" "1" "0.1")
@@ -193,7 +177,7 @@ itself.  Set to a single-element list to disable the retry chain."
   "Hash table mapping in-flight FILE → list of pending callbacks.
 
 Consulted by `media-thumbnail-generate-async' to coalesce concurrent
-requests for the same file into a single ffmpegthumbnailer subprocess.")
+requests for the same file into a single ffmpeg pipeline.")
 
 ;;
 ;; (@* "Implementation" )
@@ -203,32 +187,6 @@ requests for the same file into a single ffmpegthumbnailer subprocess.")
   "Return the cached image path for FILE."
   (format "%s%s.jpg" (expand-file-name media-thumbnail-cache-dir)
           (file-name-base file)))
-
-(cl-defun media-thumbnail-ffmpegthumbnailer-cmd (file &key size ignore-aspect-ratio)
-  "Return a command to generate a thumbnail for FILE.
-
-SIZE overrides `media-thumbnail-size' (pixels, longest edge; 0 = source
-size).  IGNORE-ASPECT-RATIO overrides
-`media-thumbnail-ignore-aspect-ratio'.  Both default to their
-package-wide defcustoms when omitted, so the single-arg call still
-works for existing callers."
-  (let ((size (or size media-thumbnail-size))
-        (ignore-aspect-ratio (if ignore-aspect-ratio
-                                 ignore-aspect-ratio
-                               media-thumbnail-ignore-aspect-ratio)))
-    (mapconcat
-     (lambda (x) x)
-     `(,media-thumbnail-ffmpegthumbnailer-executable
-       "-m"
-       ,@(when ignore-aspect-ratio '("-a"))
-       "-i"
-       ,(shell-quote-argument file)
-       "-o"
-       ,(shell-quote-argument (media-thumbnail-get-cache-path file))
-       "-q" "10" ;; Max quality for jpeg
-       "-s"
-       ,(number-to-string size))
-     " ")))
 
 ;;;###autoload
 (defun media-thumbnail-for-file (file)
@@ -252,10 +210,10 @@ works for existing callers."
           (media-thumbnail--create-image cache-path)
         (push file media-thumbnail--handled-files)
         (let ((image-spec (media-thumbnail--create-image cache-path)))
-          ;; Command is not stored on the queue anymore — the actual
-          ;; shell invocation is chosen at drain time via
-          ;; `media-thumbnail-generator', so dired inherits whichever
-          ;; backend (ffmpeg / ffmpegthumbnailer) the user picked.
+          ;; Command is not stored on the queue — dired shares the
+          ;; same ffmpeg pipeline as the single-shot async path so the
+          ;; drain step is a plain call into
+          ;; `media-thumbnail-generate-async'.
           (add-to-list 'media-thumbnail--queue
                        `(:image-spec ,image-spec :file ,file)
                        :append)
@@ -277,13 +235,11 @@ works for existing callers."
 (defun media-thumbnail--convert ()
   "Pop and dispatch one task from `media-thumbnail--queue'.
 
-Routes through `media-thumbnail-generate-async', so dired honors
-`media-thumbnail-generator' the same way the async single-shot path
-does — ffmpeg (2-step: poster then frame chain) by default, or
-ffmpegthumbnailer when explicitly selected.  The queue itself still
-throttles concurrent processes via `media-thumbnail-max-processes'
-so a dired buffer with hundreds of videos doesn't spawn a subprocess
-storm."
+Routes through `media-thumbnail-generate-async' — dired uses the same
+2-step ffmpeg pipeline (poster then frame chain) as the single-shot
+async path.  The queue itself still throttles concurrent processes
+via `media-thumbnail-max-processes' so a dired buffer with hundreds
+of videos doesn't spawn a subprocess storm."
   (when (and media-thumbnail--queue
              (< (length (process-list))
                 media-thumbnail-max-processes))
@@ -395,20 +351,6 @@ the retry chain."
        ,(shell-quote-argument cache-path))
      " ")))
 
-(defun media-thumbnail--generate-ffmpegthumbnailer (file cache-path size ignore-aspect-ratio)
-  "Legacy single-shot `ffmpegthumbnailer' generator for FILE.
-
-Fires callbacks registered on `media-thumbnail--async-callbacks' with
-SUCCESS-P = t iff the subprocess exits 0 and CACHE-PATH ends up
-non-empty."
-  (media-thumbnail--spawn
-   (media-thumbnail-ffmpegthumbnailer-cmd
-    file :size size :ignore-aspect-ratio ignore-aspect-ratio)
-   (lambda (exit-ok)
-     (media-thumbnail--fire-callbacks
-      file cache-path
-      (and exit-ok (media-thumbnail--file-non-empty-p cache-path))))))
-
 (defun media-thumbnail--ffmpeg-frame-chain (file cache-path size ignore-aspect-ratio seek-times)
   "Try to decode a frame from FILE, walking SEEK-TIMES until one succeeds.
 
@@ -456,8 +398,6 @@ decodable frame or the list is exhausted."
 (cl-defun media-thumbnail-generate-async (file &key size ignore-aspect-ratio callback)
   "Generate a thumbnail for FILE asynchronously.
 
-Backend is selected by `media-thumbnail-generator' (`ffmpeg' by
-default, or `ffmpegthumbnailer' for the legacy single-shot path).
 Returns the cache path where the JPEG will land.
 
 SIZE and IGNORE-ASPECT-RATIO override `media-thumbnail-size' and
@@ -492,9 +432,6 @@ Callers do not need their own dedup / in-flight bookkeeping."
       (puthash file (if callback (list callback) nil)
                media-thumbnail--async-callbacks)
       (pcase media-thumbnail-generator
-        ('ffmpegthumbnailer
-         (media-thumbnail--generate-ffmpegthumbnailer
-          file cache-path size ignore-aspect-ratio))
         (_
          (media-thumbnail--generate-ffmpeg
           file cache-path size ignore-aspect-ratio)))
