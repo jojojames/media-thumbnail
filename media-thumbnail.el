@@ -128,14 +128,6 @@ to disable automatic refresh when a special command is triggered."
   :type 'string
   :group 'media-thumbnail)
 
-(defcustom media-thumbnail-generator 'ffmpeg
-  "Backend used to generate video thumbnails.
-
-Only `ffmpeg' is supported.  Retained as a defcustom so a future
-alternative backend can be added without breaking existing configs."
-  :type '(choice (const :tag "ffmpeg (2-step: embedded cover then frame)" ffmpeg))
-  :group 'media-thumbnail)
-
 (defcustom media-thumbnail-ffmpeg-seek-times '("5" "1" "0.1")
   "Seek positions the ffmpeg frame-decode pass will try, in order.
 
@@ -374,8 +366,8 @@ first successful attempt fires the pending callbacks with SUCCESS-P
          (media-thumbnail--ffmpeg-frame-chain
           file cache-path size ignore-aspect-ratio (cdr seek-times))))))))
 
-(defun media-thumbnail--generate-ffmpeg (file cache-path size ignore-aspect-ratio)
-  "Two-step `ffmpeg' generator: embedded poster, then decoded-frame chain.
+(defun media-thumbnail--generate (file cache-path size ignore-aspect-ratio)
+  "Two-step ffmpeg pipeline: embedded poster, then decoded-frame chain.
 
 Attempts to extract an attached-picture stream first — quick when it
 succeeds and generally the best-quality result for files that carry a
@@ -431,10 +423,8 @@ Callers do not need their own dedup / in-flight bookkeeping."
      (t
       (puthash file (if callback (list callback) nil)
                media-thumbnail--async-callbacks)
-      (pcase media-thumbnail-generator
-        (_
-         (media-thumbnail--generate-ffmpeg
-          file cache-path size ignore-aspect-ratio)))
+      (media-thumbnail--generate
+       file cache-path size ignore-aspect-ratio)
       cache-path))))
 
 (defun media-thumbnail--redisplay (&rest _)
