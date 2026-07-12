@@ -185,12 +185,16 @@ sync with the head by `media-thumbnail--enqueue' /
 (defvar-local media-thumbnail--specs-to-flush nil
   "Image specs to flush to refresh images upon convert finish.")
 
-(defvar-local media-thumbnail--timer nil
-  "Buffer-local `media-thumbnail--convert' polling timer.
+(defvar media-thumbnail--convert-timer nil
+  "Pending one-shot timer for `media-thumbnail--convert', or nil.
 
-Set by `media-thumbnail-dired-mode' on enable, cancelled on disable
-and on `kill-buffer-hook' — declared here so the disable path can
-`cancel-timer' it before nulling the slot.")
+Replaces the old buffer-local 0.25 s repeating timer that fired
+four times per second per active dired buffer regardless of queue
+state.  Now scheduled on demand by `media-thumbnail--enqueue' when
+a fresh request lands in an empty queue, and re-scheduled by
+`media-thumbnail--convert' when it still has more work to drain.
+Cleared to nil the instant the queue empties, so an idle session
+consumes no CPU.")
 
 (defvar media-thumbnail--async-callbacks (make-hash-table :test 'equal)
   "Hash table mapping in-flight FILE → list of pending callbacks.
@@ -217,18 +221,31 @@ runtime change to `media-thumbnail-cache-dir' (compared by value).")
   (format "%s%s.jpg" (expand-file-name media-thumbnail-cache-dir)
           (file-name-base file)))
 
+(defun media-thumbnail--schedule-convert ()
+  "Ensure `media-thumbnail--convert' is scheduled to run soon.
+
+Only queues a one-shot timer when none is currently pending, so a
+burst of enqueues coalesces into a single scheduled drain.  A no-op
+when `media-thumbnail--convert-timer' already points at a live
+timer."
+  (unless (timerp media-thumbnail--convert-timer)
+    (setq media-thumbnail--convert-timer
+          (run-with-timer 0.25 nil #'media-thumbnail--convert))))
+
 (defun media-thumbnail--enqueue (item)
   "Append ITEM to `media-thumbnail--queue' in O(1).
 
 Threads through `media-thumbnail--queue-tail' so a full dired
 refresh over N videos runs in O(N) instead of the O(N^2) that
 `add-to-list :append' produced when it walked the whole list on
-every push."
+every push.  Also schedules the drain timer if none is pending,
+so the queue makes progress without a background poller."
   (let ((cell (cons item nil)))
     (if media-thumbnail--queue-tail
         (setcdr media-thumbnail--queue-tail cell)
       (setq media-thumbnail--queue cell))
-    (setq media-thumbnail--queue-tail cell)))
+    (setq media-thumbnail--queue-tail cell))
+  (media-thumbnail--schedule-convert))
 
 (defun media-thumbnail--dequeue ()
   "Pop the head of `media-thumbnail--queue' and return it, or nil.
@@ -303,9 +320,17 @@ value differs from the cached one."
 
 Routes through `media-thumbnail-generate-async' — dired uses the same
 2-step ffmpeg pipeline (poster then frame chain) as the single-shot
-async path.  The queue itself still throttles concurrent processes
-via `media-thumbnail-max-processes' so a dired buffer with hundreds
-of videos doesn't spawn a subprocess storm."
+async path.  Concurrent processes are throttled via
+`media-thumbnail-max-processes' so a dired buffer with hundreds of
+videos doesn't spawn a subprocess storm.
+
+Runs as the single-shot callback of
+`media-thumbnail--convert-timer' — clears the pending-timer slot at
+entry so `media-thumbnail--enqueue' can schedule the next tick, and
+re-arms via `media-thumbnail--schedule-convert' if the queue still
+holds items.  When the queue is empty on entry, the function exits
+without rescheduling, so an idle session leaves no live timer."
+  (setq media-thumbnail--convert-timer nil)
   (when (and media-thumbnail--queue
              (< (length (process-list))
                 media-thumbnail-max-processes))
@@ -331,7 +356,9 @@ of videos doesn't spawn a subprocess storm."
                    (lambda ()
                      (when (buffer-live-p host-buf)
                        (with-current-buffer host-buf
-                         (media-thumbnail--redisplay)))))))))))))))
+                         (media-thumbnail--redisplay)))))))))))))
+    (when media-thumbnail--queue
+      (media-thumbnail--schedule-convert))))
 
 (defun media-thumbnail--fire-callbacks (file cache-path success-p)
   "Fire every pending callback registered for FILE, then clear the entry."
@@ -542,6 +569,9 @@ Callers do not need their own dedup / in-flight bookkeeping."
   (setq media-thumbnail--redisplay-timer nil)
   (setq media-thumbnail--queue nil)
   (setq media-thumbnail--queue-tail nil)
+  (when (timerp media-thumbnail--convert-timer)
+    (cancel-timer media-thumbnail--convert-timer))
+  (setq media-thumbnail--convert-timer nil)
   (clrhash media-thumbnail--handled-files)
   (setq media-thumbnail--cache-dir-ensured nil)
   (when (file-exists-p media-thumbnail-cache-dir)
@@ -593,18 +623,6 @@ If DIRECTORY is nil, use `default-directory'."
                   (image-animate image 0 t))))))
         (forward-line 1)))))
 
-(defun media-thumbnail--cancel-timer ()
-  "Cancel `media-thumbnail--timer' in the current buffer if still live.
-
-Safe to call from `kill-buffer-hook' and from the mode disable path;
-both routes need the timer stopped, and the alternative — letting
-`run-with-timer' fire `media-thumbnail--convert' forever after the
-dired buffer is gone — leaks CPU proportional to the number of
-long-lived dired buffers a user has opened over a session."
-  (when (timerp media-thumbnail--timer)
-    (cancel-timer media-thumbnail--timer))
-  (setq-local media-thumbnail--timer nil))
-
 (define-minor-mode media-thumbnail-dired-mode
   "Toggle `media-thumbnail-dired-mode'."
   :lighter " Dired-Thumbnails"
@@ -612,10 +630,6 @@ long-lived dired buffers a user has opened over a session."
       (progn
         (when (funcall media-thumbnail-dired-should-hide-details-fn)
           (dired-hide-details-mode +1))
-        (setq-local media-thumbnail--timer
-                    (run-with-timer 0 0.25 #'media-thumbnail--convert))
-        (add-hook 'kill-buffer-hook
-                  #'media-thumbnail--cancel-timer nil :local)
         (add-hook 'dired-after-readin-hook
                   #'media-thumbnail-dired--display :append :local)
         (mapc
@@ -649,9 +663,6 @@ long-lived dired buffers a user has opened over a session."
         (media-thumbnail-dired--display))
     (when (funcall media-thumbnail-dired-should-hide-details-fn)
       (dired-hide-details-mode -1))
-    (media-thumbnail--cancel-timer)
-    (remove-hook 'kill-buffer-hook
-                 #'media-thumbnail--cancel-timer :local)
     (remove-hook 'dired-after-readin-hook
                  #'media-thumbnail-dired--display :local)
     (mapc

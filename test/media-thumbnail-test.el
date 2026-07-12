@@ -43,36 +43,51 @@ value."
                    '((:image-spec dummy :file "x.mp4"))))
     (should (null (buffer-local-value 'media-thumbnail--specs-to-flush other)))))
 
-(ert-deftest media-thumbnail-test-cancel-timer-clears-slot ()
-  "Bug 2: `media-thumbnail--cancel-timer' must cancel and null the
-timer even when called with a live timer.  Regression guard for the
-old disable path that just `setq'd the slot to nil and left the timer
-firing forever."
-  (media-thumbnail-test--with-temp-buffers (buf)
-    (with-current-buffer buf
-      (setq-local media-thumbnail--timer
-                  (run-with-timer 3600 nil #'ignore))
-      (should (timerp media-thumbnail--timer))
-      (let ((timer media-thumbnail--timer))
-        (media-thumbnail--cancel-timer)
-        (should (null media-thumbnail--timer))
-        ;; Cancelled timers are no longer in `timer-list'.
-        (should-not (memq timer timer-list))))))
+(ert-deftest media-thumbnail-test-enqueue-schedules-convert-timer ()
+  "Bug 6: enqueueing into an empty queue must arm the drain timer;
+before the on-demand refactor there was a fixed 0.25 s repeating
+poller regardless of queue state, wasting CPU forever per active
+dired buffer."
+  (let ((media-thumbnail--queue nil)
+        (media-thumbnail--queue-tail nil)
+        (media-thumbnail--convert-timer nil))
+    (unwind-protect
+        (progn
+          (should (null media-thumbnail--convert-timer))
+          (media-thumbnail--enqueue :item)
+          (should (timerp media-thumbnail--convert-timer)))
+      (when (timerp media-thumbnail--convert-timer)
+        (cancel-timer media-thumbnail--convert-timer))
+      (setq media-thumbnail--convert-timer nil))))
 
-(ert-deftest media-thumbnail-test-kill-buffer-hook-cancels-timer ()
-  "Bug 2: killing a buffer with `media-thumbnail-dired-mode' active
-must cancel the convert timer.  Simulates the mode's setup + a
-buffer kill and asserts no lingering timer is left in `timer-list'."
-  (media-thumbnail-test--with-temp-buffers (buf)
-    (let (captured)
-      (with-current-buffer buf
-        (setq-local media-thumbnail--timer
-                    (run-with-timer 3600 nil #'ignore))
-        (setq captured media-thumbnail--timer)
-        (add-hook 'kill-buffer-hook
-                  #'media-thumbnail--cancel-timer nil :local))
-      (kill-buffer buf)
-      (should-not (memq captured timer-list)))))
+(ert-deftest media-thumbnail-test-enqueue-coalesces-scheduled-timer ()
+  "Bug 6: a burst of enqueues must not stack multiple pending timers.
+Only the first enqueue arms a drain; subsequent enqueues into a
+non-empty queue reuse the pending timer."
+  (let ((media-thumbnail--queue nil)
+        (media-thumbnail--queue-tail nil)
+        (media-thumbnail--convert-timer nil))
+    (unwind-protect
+        (progn
+          (media-thumbnail--enqueue :a)
+          (let ((first media-thumbnail--convert-timer))
+            (media-thumbnail--enqueue :b)
+            (media-thumbnail--enqueue :c)
+            (should (eq media-thumbnail--convert-timer first))))
+      (when (timerp media-thumbnail--convert-timer)
+        (cancel-timer media-thumbnail--convert-timer))
+      (setq media-thumbnail--convert-timer nil))))
+
+(ert-deftest media-thumbnail-test-convert-does-not-reschedule-on-empty ()
+  "Bug 6: `media-thumbnail--convert' must leave the pending-timer slot
+`nil' when the queue is empty on entry, so an idle session has no
+live timer.  Regression guard against a subtle refactor where
+`--convert' unconditionally re-arms."
+  (let ((media-thumbnail--queue nil)
+        (media-thumbnail--queue-tail nil)
+        (media-thumbnail--convert-timer 'sentinel))
+    (media-thumbnail--convert)
+    (should (null media-thumbnail--convert-timer))))
 
 (ert-deftest media-thumbnail-test-handled-files-is-hash ()
   "Bug 3: `--handled-files' should be a hash-table, not a list, so
