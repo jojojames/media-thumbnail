@@ -163,7 +163,21 @@ comparisons).  Hash table membership is O(1), so the guard is
 now constant-time regardless of how many videos have been touched.")
 
 (defvar media-thumbnail--queue '()
-  "To be processed by `media-thumbnail'.")
+  "FIFO of pending thumbnail requests, drained by `media-thumbnail--convert'.
+
+Paired with `media-thumbnail--queue-tail' so `media-thumbnail--enqueue'
+appends in O(1); the old design used `add-to-list :append', which
+walked the entire list per enqueue for an O(N^2) dired refresh over
+N unique videos.  Dedup used to matter for that `add-to-list' path;
+now the `media-thumbnail--handled-files' guard already prevents the
+same file from being pushed twice per session.")
+
+(defvar media-thumbnail--queue-tail nil
+  "Last cons of `media-thumbnail--queue', or nil when the queue is empty.
+
+Tail pointer for O(1) `media-thumbnail--enqueue' appends.  Kept in
+sync with the head by `media-thumbnail--enqueue' /
+`media-thumbnail--dequeue'.")
 
 (defvar-local media-thumbnail--redisplay-timer nil
   "Timer used after converting for redisplay.")
@@ -202,6 +216,31 @@ runtime change to `media-thumbnail-cache-dir' (compared by value).")
   "Return the cached image path for FILE."
   (format "%s%s.jpg" (expand-file-name media-thumbnail-cache-dir)
           (file-name-base file)))
+
+(defun media-thumbnail--enqueue (item)
+  "Append ITEM to `media-thumbnail--queue' in O(1).
+
+Threads through `media-thumbnail--queue-tail' so a full dired
+refresh over N videos runs in O(N) instead of the O(N^2) that
+`add-to-list :append' produced when it walked the whole list on
+every push."
+  (let ((cell (cons item nil)))
+    (if media-thumbnail--queue-tail
+        (setcdr media-thumbnail--queue-tail cell)
+      (setq media-thumbnail--queue cell))
+    (setq media-thumbnail--queue-tail cell)))
+
+(defun media-thumbnail--dequeue ()
+  "Pop the head of `media-thumbnail--queue' and return it, or nil.
+
+Kept next to `media-thumbnail--enqueue' so tail-pointer maintenance
+stays in one place."
+  (when media-thumbnail--queue
+    (let ((head (car media-thumbnail--queue)))
+      (setq media-thumbnail--queue (cdr media-thumbnail--queue))
+      (unless media-thumbnail--queue
+        (setq media-thumbnail--queue-tail nil))
+      head)))
 
 (defun media-thumbnail--ensure-cache-dir ()
   "Ensure `media-thumbnail-cache-dir' exists on disk.
@@ -242,9 +281,8 @@ value differs from the cached one."
           ;; same ffmpeg pipeline as the single-shot async path so the
           ;; drain step is a plain call into
           ;; `media-thumbnail-generate-async'.
-          (add-to-list 'media-thumbnail--queue
-                       `(:image-spec ,image-spec :file ,file)
-                       :append)
+          (media-thumbnail--enqueue
+           `(:image-spec ,image-spec :file ,file))
           image-spec))))
    (t nil)))
 
@@ -271,7 +309,7 @@ of videos doesn't spawn a subprocess storm."
   (when (and media-thumbnail--queue
              (< (length (process-list))
                 media-thumbnail-max-processes))
-    (pcase-let* ((convert-request (pop media-thumbnail--queue))
+    (pcase-let* ((convert-request (media-thumbnail--dequeue))
                  (`(:image-spec ,image-spec :file ,file)
                   convert-request)
                  (host-buf (current-buffer)))
@@ -503,6 +541,7 @@ Callers do not need their own dedup / in-flight bookkeeping."
   (setq media-thumbnail--specs-to-flush nil)
   (setq media-thumbnail--redisplay-timer nil)
   (setq media-thumbnail--queue nil)
+  (setq media-thumbnail--queue-tail nil)
   (clrhash media-thumbnail--handled-files)
   (setq media-thumbnail--cache-dir-ensured nil)
   (when (file-exists-p media-thumbnail-cache-dir)

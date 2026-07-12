@@ -143,6 +143,52 @@ new location."
       (delete-directory a t)
       (delete-directory b t))))
 
+(ert-deftest media-thumbnail-test-enqueue-preserves-fifo ()
+  "Bug 5: `--enqueue' / `--dequeue' must preserve FIFO order across a
+sequence of pushes.  Regression guard for the tail-pointer refactor —
+a stale tail would cause later items to be lost or dropped."
+  (let ((media-thumbnail--queue nil)
+        (media-thumbnail--queue-tail nil))
+    (media-thumbnail--enqueue :a)
+    (media-thumbnail--enqueue :b)
+    (media-thumbnail--enqueue :c)
+    (should (eq (media-thumbnail--dequeue) :a))
+    (should (eq (media-thumbnail--dequeue) :b))
+    (should (eq (media-thumbnail--dequeue) :c))
+    (should (null (media-thumbnail--dequeue)))
+    (should (null media-thumbnail--queue-tail))))
+
+(ert-deftest media-thumbnail-test-enqueue-is-linear ()
+  "Bug 5: `--enqueue' must be O(1) per call.  Verified by pushing
+10000 items and asserting the total wallclock stays under a
+generous ceiling that the old `add-to-list :append' path could
+never meet (quadratic).  The ceiling is loose enough to avoid
+flaky CI; the intent is only to catch a regression to O(N)+ per
+call."
+  (let ((media-thumbnail--queue nil)
+        (media-thumbnail--queue-tail nil))
+    (let ((t0 (float-time)))
+      (dotimes (i 10000)
+        (media-thumbnail--enqueue i))
+      (let ((elapsed (- (float-time) t0)))
+        (should (< elapsed 0.5))))
+    (should (equal (length media-thumbnail--queue) 10000))
+    (should (equal (car media-thumbnail--queue) 0))
+    (should (equal (car media-thumbnail--queue-tail) 9999))))
+
+(ert-deftest media-thumbnail-test-dequeue-empties-tail ()
+  "Bug 5: draining the queue must null the tail pointer so a
+subsequent push does not `setcdr' onto a garbage cons."
+  (let ((media-thumbnail--queue nil)
+        (media-thumbnail--queue-tail nil))
+    (media-thumbnail--enqueue :only)
+    (media-thumbnail--dequeue)
+    (should (null media-thumbnail--queue))
+    (should (null media-thumbnail--queue-tail))
+    ;; Re-push into a drained queue.
+    (media-thumbnail--enqueue :again)
+    (should (eq (media-thumbnail--dequeue) :again))))
+
 ;;; End of test file.
 (provide 'media-thumbnail-test)
 ;;; media-thumbnail-test.el ends here
