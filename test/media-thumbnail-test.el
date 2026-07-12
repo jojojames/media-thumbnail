@@ -43,6 +43,37 @@ value."
                    '((:image-spec dummy :file "x.mp4"))))
     (should (null (buffer-local-value 'media-thumbnail--specs-to-flush other)))))
 
+(ert-deftest media-thumbnail-test-cancel-timer-clears-slot ()
+  "Bug 2: `media-thumbnail--cancel-timer' must cancel and null the
+timer even when called with a live timer.  Regression guard for the
+old disable path that just `setq'd the slot to nil and left the timer
+firing forever."
+  (media-thumbnail-test--with-temp-buffers (buf)
+    (with-current-buffer buf
+      (setq-local media-thumbnail--timer
+                  (run-with-timer 3600 nil #'ignore))
+      (should (timerp media-thumbnail--timer))
+      (let ((timer media-thumbnail--timer))
+        (media-thumbnail--cancel-timer)
+        (should (null media-thumbnail--timer))
+        ;; Cancelled timers are no longer in `timer-list'.
+        (should-not (memq timer timer-list))))))
+
+(ert-deftest media-thumbnail-test-kill-buffer-hook-cancels-timer ()
+  "Bug 2: killing a buffer with `media-thumbnail-dired-mode' active
+must cancel the convert timer.  Simulates the mode's setup + a
+buffer kill and asserts no lingering timer is left in `timer-list'."
+  (media-thumbnail-test--with-temp-buffers (buf)
+    (let (captured)
+      (with-current-buffer buf
+        (setq-local media-thumbnail--timer
+                    (run-with-timer 3600 nil #'ignore))
+        (setq captured media-thumbnail--timer)
+        (add-hook 'kill-buffer-hook
+                  #'media-thumbnail--cancel-timer nil :local))
+      (kill-buffer buf)
+      (should-not (memq captured timer-list)))))
+
 ;;; End of test file.
 (provide 'media-thumbnail-test)
 ;;; media-thumbnail-test.el ends here

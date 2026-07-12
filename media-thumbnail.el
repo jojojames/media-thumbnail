@@ -165,6 +165,13 @@ itself.  Set to a single-element list to disable the retry chain."
 (defvar-local media-thumbnail--specs-to-flush nil
   "Image specs to flush to refresh images upon convert finish.")
 
+(defvar-local media-thumbnail--timer nil
+  "Buffer-local `media-thumbnail--convert' polling timer.
+
+Set by `media-thumbnail-dired-mode' on enable, cancelled on disable
+and on `kill-buffer-hook' — declared here so the disable path can
+`cancel-timer' it before nulling the slot.")
+
 (defvar media-thumbnail--async-callbacks (make-hash-table :test 'equal)
   "Hash table mapping in-flight FILE → list of pending callbacks.
 
@@ -257,7 +264,7 @@ of videos doesn't spawn a subprocess storm."
                    (lambda ()
                      (when (buffer-live-p host-buf)
                        (with-current-buffer host-buf
-                         (media-thumbnail--redisplay))))))))))))))))
+                         (media-thumbnail--redisplay)))))))))))))))
 
 (defun media-thumbnail--fire-callbacks (file cache-path success-p)
   "Fire every pending callback registered for FILE, then clear the entry."
@@ -518,6 +525,18 @@ If DIRECTORY is nil, use `default-directory'."
                   (image-animate image 0 t))))))
         (forward-line 1)))))
 
+(defun media-thumbnail--cancel-timer ()
+  "Cancel `media-thumbnail--timer' in the current buffer if still live.
+
+Safe to call from `kill-buffer-hook' and from the mode disable path;
+both routes need the timer stopped, and the alternative — letting
+`run-with-timer' fire `media-thumbnail--convert' forever after the
+dired buffer is gone — leaks CPU proportional to the number of
+long-lived dired buffers a user has opened over a session."
+  (when (timerp media-thumbnail--timer)
+    (cancel-timer media-thumbnail--timer))
+  (setq-local media-thumbnail--timer nil))
+
 (define-minor-mode media-thumbnail-dired-mode
   "Toggle `media-thumbnail-dired-mode'."
   :lighter " Dired-Thumbnails"
@@ -527,6 +546,8 @@ If DIRECTORY is nil, use `default-directory'."
           (dired-hide-details-mode +1))
         (setq-local media-thumbnail--timer
                     (run-with-timer 0 0.25 #'media-thumbnail--convert))
+        (add-hook 'kill-buffer-hook
+                  #'media-thumbnail--cancel-timer nil :local)
         (add-hook 'dired-after-readin-hook
                   #'media-thumbnail-dired--display :append :local)
         (mapc
@@ -560,7 +581,9 @@ If DIRECTORY is nil, use `default-directory'."
         (media-thumbnail-dired--display))
     (when (funcall media-thumbnail-dired-should-hide-details-fn)
       (dired-hide-details-mode -1))
-    (setq-local media-thumbnail--timer nil)
+    (media-thumbnail--cancel-timer)
+    (remove-hook 'kill-buffer-hook
+                 #'media-thumbnail--cancel-timer :local)
     (remove-hook 'dired-after-readin-hook
                  #'media-thumbnail-dired--display :local)
     (mapc
