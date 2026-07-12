@@ -137,20 +137,65 @@ Set to nil to disable automatic refresh on special commands."
   :type 'string
   :group 'media-thumbnail)
 
-(defcustom media-thumbnail-ffmpeg-seek-times '("5" "1" "0.1")
+(defcustom media-thumbnail-ffprobe-executable "ffprobe"
+  "Location of the ffprobe binary.
+
+Used to resolve percentage entries in `media-thumbnail-ffmpeg-seek-times'
+to absolute seconds via a one-shot duration probe.  When ffprobe is
+not on PATH, percentage entries are silently skipped and the chain
+falls back to the numeric entries only."
+  :type 'string
+  :group 'media-thumbnail)
+
+(defcustom media-thumbnail-ffmpeg-seek-times '("10%" "60" "5" "1" "0.1")
   "Seek positions the ffmpeg frame-decode pass will try, in order.
 
-Each entry is passed to `ffmpeg -ss' in turn: the frame command runs
-with the first entry; on non-zero exit or empty output the next entry
-is tried; the pipeline reports failure only when the whole list is
-exhausted.  Handles the common failure modes: 5s covers most files;
-1s covers short clips; 0.1s covers extremely short clips and files
-whose only decodable frame is right at the start.
+Each entry is either
 
-Accepts any duration `ffmpeg' understands — seconds (\"5\"), MM:SS
-(\"1:30\"), or HH:MM:SS.  Percentages are NOT supported by `ffmpeg'
-itself.  Set to a single-element list to disable the retry chain."
+  \"N\" or \"N.M\" — absolute seconds.
+  \"MM:SS\" / \"HH:MM:SS\" — anything `ffmpeg -ss' understands.
+  \"P%\" — a percentage of the source duration.  Requires
+          `media-thumbnail-ffprobe-executable' on PATH; when it is not,
+          percentage entries are silently skipped so the chain still
+          works with the numeric fallbacks.
+
+The pipeline runs the frame command with the first (resolved) entry;
+on non-zero exit or empty output the next entry is tried; failure is
+reported only when the whole list is exhausted.
+
+Defaults cover the common cases: 10% picks a representative frame
+from a long video (a movie's studio-logo phase is well past 10%);
+60/5/1/0.1 are the fallback ladder for shorter or broken files."
   :type '(repeat string)
+  :group 'media-thumbnail)
+
+(defcustom media-thumbnail-ffmpeg-split-seek-threshold 10
+  "Seconds threshold beyond which the frame command uses a split seek.
+
+An accurate ffmpeg seek (`-ss' AFTER `-i') decodes from the start of
+the file until reaching the target — decode cost scales linearly with
+the seek target.  For long videos a 10% seek can be many minutes and
+turn into multi-second wall time.
+
+When the target exceeds this threshold, the frame command instead
+issues a coarse `-ss (target - fine)' BEFORE `-i' (fast keyframe
+seek) plus a fine `-ss (fine)' AFTER `-i' (accurate refinement).
+Total decode work is capped at `media-thumbnail-ffmpeg-split-seek-fine'
+seconds regardless of how far into the file the target sits.
+
+Values below the threshold, non-numeric strings (e.g. MM:SS), and the
+zero-length \"0\" seek skip the split and use plain accurate seek."
+  :type 'number
+  :group 'media-thumbnail)
+
+(defcustom media-thumbnail-ffmpeg-split-seek-fine 3
+  "Seconds of accurate decode retained after the coarse split-seek jump.
+
+Small enough to keep decode cost bounded, large enough to survive
+short GOPs — a 3-second window is roughly a keyframe-plus-follow-up on
+typical H.264 videos, which is where the frame-decode pass gets a
+complete frame with no `frame not finished' error."
+  :type 'number
   :group 'media-thumbnail)
 
 (defcustom media-thumbnail-dired-animate-thumbnails t
@@ -193,6 +238,22 @@ sync with the head by `media-thumbnail--enqueue' /
 
 (defvar-local media-thumbnail--specs-to-flush nil
   "Image specs to flush to refresh images upon convert finish.")
+
+(defvar media-thumbnail--ffprobe-available 'unchecked
+  "Cached ffprobe availability: t, nil, or the sentinel `unchecked'.
+
+Populated by `media-thumbnail--ffprobe-available-p' on first use so
+we call `executable-find' at most once per Emacs session.  Reset by
+`media-thumbnail-clear-all' so a user who installed ffprobe after
+Emacs startup can re-detect it.")
+
+(defvar media-thumbnail--duration-cache (make-hash-table :test 'equal)
+  "FILE → duration (float seconds) memo for the ffprobe path.
+
+Each unique FILE is probed at most once per session; the resolver
+threads the cached duration through every `%' entry in the seek
+chain so a five-attempt fallback ladder still runs at most one
+ffprobe subprocess per file.")
 
 (defvar media-thumbnail--convert-timer nil
   "Pending one-shot timer for `media-thumbnail--convert', or nil.
@@ -413,6 +474,79 @@ success, so the frame-fallback still runs and overwrites it."
   (when-let* ((attrs (file-attributes path)))
     (> (file-attribute-size attrs) 0)))
 
+(defun media-thumbnail--ffprobe-available-p ()
+  "Return non-nil if `media-thumbnail-ffprobe-executable' is on PATH.
+
+Result is cached in `media-thumbnail--ffprobe-available' for the rest
+of the session; `media-thumbnail-clear-all' resets the cache so a
+freshly-installed ffprobe is picked up without a restart."
+  (when (eq media-thumbnail--ffprobe-available 'unchecked)
+    (setq media-thumbnail--ffprobe-available
+          (and (executable-find media-thumbnail-ffprobe-executable) t)))
+  media-thumbnail--ffprobe-available)
+
+(defun media-thumbnail--probe-duration (file)
+  "Return FILE's duration in seconds via `ffprobe', memoized.
+
+Runs `ffprobe -v error -show_entries format=duration -of csv=p=0'
+synchronously.  Result is cached in `media-thumbnail--duration-cache'
+so subsequent seek-chain attempts against the same FILE do not
+re-probe.  Returns nil when ffprobe is unavailable, exits non-zero,
+or emits an unparseable duration."
+  (when (media-thumbnail--ffprobe-available-p)
+    (let ((cached (gethash file media-thumbnail--duration-cache 'miss)))
+      (if (not (eq cached 'miss))
+          cached
+        (let ((duration
+               (with-temp-buffer
+                 (when (zerop
+                        (call-process
+                         media-thumbnail-ffprobe-executable nil t nil
+                         "-v" "error"
+                         "-show_entries" "format=duration"
+                         "-of" "csv=p=0" file))
+                   (let ((raw (string-trim (buffer-string))))
+                     (and (string-match-p "\\`[0-9.]+\\'" raw)
+                          (string-to-number raw)))))))
+          (puthash file duration media-thumbnail--duration-cache)
+          duration)))))
+
+(defun media-thumbnail--resolve-seek-time (entry duration)
+  "Return a plain-seconds string for ENTRY, or nil if it cannot resolve.
+
+ENTRY is one of the strings from `media-thumbnail-ffmpeg-seek-times'.
+A plain time literal (`\"5\"', `\"1:30\"') passes through unchanged.
+A percentage entry (`\"10%\"') is multiplied by DURATION (float
+seconds) and formatted to three decimal places.  Returns nil when the
+entry needs a duration we don't have — the caller drops nils from the
+chain, so the chain still runs against whatever numeric fallbacks
+remain."
+  (cond
+   ((not (stringp entry)) nil)
+   ((string-match "\\`\\([0-9.]+\\)%\\'" entry)
+    (when duration
+      (format "%.3f"
+              (* duration (/ (string-to-number (match-string 1 entry))
+                             100.0)))))
+   (t entry)))
+
+(defun media-thumbnail--resolve-seek-times (file entries)
+  "Return ENTRIES with each `%' entry resolved against FILE's duration.
+
+Nil entries — those that needed ffprobe but couldn't get a duration —
+are dropped.  A duration probe is issued only when ENTRIES actually
+contains a percentage; a pure-numeric list never touches ffprobe."
+  (let* ((needs-duration
+          (cl-some (lambda (e)
+                     (and (stringp e) (string-match-p "%" e)))
+                   entries))
+         (duration (and needs-duration
+                        (media-thumbnail--probe-duration file))))
+    (delq nil
+          (mapcar (lambda (e)
+                    (media-thumbnail--resolve-seek-time e duration))
+                  entries))))
+
 (cl-defun media-thumbnail-ffmpeg-poster-cmd (file cache-path)
   "Return an ffmpeg shell command that extracts FILE's embedded cover art.
 
@@ -430,15 +564,40 @@ frame-decode pass without inspecting stderr."
      ,(shell-quote-argument cache-path))
    " "))
 
+(defun media-thumbnail--split-seek (seek)
+  "Return (COARSE . FINE) split for absolute SEEK string, or nil.
+
+Only applies to a plain numeric string above
+`media-thumbnail-ffmpeg-split-seek-threshold'.  MM:SS / HH:MM:SS
+strings and values at or below the threshold return nil — the caller
+falls back to a single post-input `-ss'.  COARSE is the pre-input
+fast seek target (in seconds, three decimals); FINE is the residual
+post-input accurate seek retained after the coarse jump."
+  (when (and (stringp seek)
+             (string-match "\\`\\([0-9.]+\\)\\'" seek))
+    (let ((seek-num (string-to-number seek))
+          (fine media-thumbnail-ffmpeg-split-seek-fine))
+      (when (> seek-num media-thumbnail-ffmpeg-split-seek-threshold)
+        (cons (format "%.3f" (- seek-num fine))
+              (number-to-string fine))))))
+
 (cl-defun media-thumbnail-ffmpeg-frame-cmd (file cache-path &key size ignore-aspect-ratio seek-time)
   "Return an ffmpeg shell command that decodes a single frame from FILE.
 
-Places `-ss' AFTER `-i' so ffmpeg does an accurate seek — decode from
-start until the timestamp — instead of the input-side fast seek that
-lands on the nearest prior keyframe.  Fast seek is faster but produces
-`frame not finished' errors on files with sparse keyframes; the
-accurate variant is one linear read per file and always yields a
-complete frame.
+Places `-ss' AFTER `-i' by default so ffmpeg does an accurate seek —
+decode from start until the timestamp — instead of the input-side
+fast seek that lands on the nearest prior keyframe.  Fast seek is
+faster but produces `frame not finished' errors on files with sparse
+keyframes.
+
+For deep seeks (target seconds above
+`media-thumbnail-ffmpeg-split-seek-threshold') the command instead
+splits the seek: a coarse `-ss' BEFORE `-i' that fast-seeks close to
+the target, plus a small `-ss (fine)' AFTER `-i' for accurate
+refinement.  Decode work is then bounded by
+`media-thumbnail-ffmpeg-split-seek-fine' seconds regardless of how
+far into the file the target sits — 50% of a 2h movie now costs the
+same as 10%.
 
 Writes a JPEG to CACHE-PATH.  SIZE overrides `media-thumbnail-size';
 IGNORE-ASPECT-RATIO overrides `media-thumbnail-ignore-aspect-ratio'.
@@ -452,6 +611,7 @@ the retry chain."
          (seek (or seek-time
                    (car media-thumbnail-ffmpeg-seek-times)
                    "5"))
+         (split (media-thumbnail--split-seek seek))
          (scale (unless (zerop size)
                   (if ignore-aspect-ratio
                       (format "scale=%d:%d" size size)
@@ -461,8 +621,9 @@ the retry chain."
      #'identity
      `(,media-thumbnail-ffmpeg-executable
        "-nostdin" "-y" "-loglevel" "error"
+       ,@(when split (list "-ss" (car split)))
        "-i" ,(shell-quote-argument file)
-       "-ss" ,seek
+       "-ss" ,(if split (cdr split) seek)
        "-frames:v" "1"
        "-q:v" "2"
        ,@(when scale (list "-vf" (shell-quote-argument scale)))
@@ -515,16 +676,21 @@ succeeds and generally the best-quality result for files that carry a
 poster (music videos, movies with cover art).  When the poster attempt
 exits non-zero or produces an empty JPEG (source has no
 attached-picture stream, or ffmpeg failed to write it), falls through
-to `media-thumbnail--ffmpeg-frame-chain', which walks
-`media-thumbnail-ffmpeg-seek-times' until one seek position yields a
-decodable frame or the list is exhausted."
+to `media-thumbnail--ffmpeg-frame-chain'.
+
+The frame-chain input is `media-thumbnail-ffmpeg-seek-times' with any
+`%' entries pre-resolved against FILE's duration via ffprobe.
+Percentage entries that cannot be resolved (ffprobe absent, or probe
+failed for this file) are silently dropped, so the chain still runs
+whatever numeric entries remain."
   (media-thumbnail--try-cmd
    (media-thumbnail-ffmpeg-poster-cmd file cache-path)
    file cache-path
    (lambda ()
      (media-thumbnail--ffmpeg-frame-chain
       file cache-path size ignore-aspect-ratio
-      media-thumbnail-ffmpeg-seek-times))))
+      (media-thumbnail--resolve-seek-times
+       file media-thumbnail-ffmpeg-seek-times)))))
 
 ;;;###autoload
 (cl-defun media-thumbnail-generate-async (file &key size ignore-aspect-ratio callback)
@@ -610,6 +776,8 @@ Callers do not need their own dedup / in-flight bookkeeping."
     (cancel-timer media-thumbnail--convert-timer))
   (setq media-thumbnail--convert-timer nil)
   (clrhash media-thumbnail--handled-files)
+  (clrhash media-thumbnail--duration-cache)
+  (setq media-thumbnail--ffprobe-available 'unchecked)
   (setq media-thumbnail--cache-dir-ensured nil)
   (when (file-exists-p media-thumbnail-cache-dir)
     (message "Deleting %s directory." media-thumbnail-cache-dir)

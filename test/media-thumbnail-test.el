@@ -390,6 +390,74 @@ as the host-buf, not OTHER."
           (cancel-timer media-thumbnail--convert-timer))
         (setq media-thumbnail--convert-timer nil)))))
 
+(ert-deftest media-thumbnail-test-resolve-seek-time-plain ()
+  "A numeric or MM:SS entry must pass through `--resolve-seek-time'
+verbatim; those don't need a duration."
+  (should (equal (media-thumbnail--resolve-seek-time "5" nil) "5"))
+  (should (equal (media-thumbnail--resolve-seek-time "1:30" nil) "1:30"))
+  (should (equal (media-thumbnail--resolve-seek-time "0.1" 100.0) "0.1")))
+
+(ert-deftest media-thumbnail-test-resolve-seek-time-percent ()
+  "A `%' entry with a valid duration must resolve to absolute seconds
+formatted to three decimals; without a duration it must return nil
+so `--resolve-seek-times' can drop it from the chain."
+  (should (equal (media-thumbnail--resolve-seek-time "10%" 100.0) "10.000"))
+  (should (equal (media-thumbnail--resolve-seek-time "50%" 3600.0) "1800.000"))
+  (should (null (media-thumbnail--resolve-seek-time "10%" nil))))
+
+(ert-deftest media-thumbnail-test-resolve-seek-times-drops-unresolvable ()
+  "When ffprobe is unavailable (mocked here as nil-returning
+`--probe-duration'), `%' entries must be dropped so the chain
+still walks the numeric fallbacks."
+  (cl-letf (((symbol-function 'media-thumbnail--probe-duration)
+             (lambda (_file) nil)))
+    (should (equal
+             (media-thumbnail--resolve-seek-times
+              "x.mp4" '("10%" "60" "5" "1" "0.1"))
+             '("60" "5" "1" "0.1")))))
+
+(ert-deftest media-thumbnail-test-resolve-seek-times-skips-probe-on-pure-numeric ()
+  "A pure-numeric seek list must not touch ffprobe — no probe process
+should spawn when the list has no `%' entries.  Guarded by mocking
+`--probe-duration' to error; any call would abort the test."
+  (cl-letf (((symbol-function 'media-thumbnail--probe-duration)
+             (lambda (_file) (error "should not be called"))))
+    (should (equal
+             (media-thumbnail--resolve-seek-times
+              "x.mp4" '("60" "5" "1" "0.1"))
+             '("60" "5" "1" "0.1")))))
+
+(ert-deftest media-thumbnail-test-split-seek-triggers-past-threshold ()
+  "Deep seek targets (above the split threshold) must return a
+(COARSE . FINE) pair; sub-threshold seeks return nil so the frame
+command falls back to plain post-input `-ss'."
+  (let ((media-thumbnail-ffmpeg-split-seek-threshold 10)
+        (media-thumbnail-ffmpeg-split-seek-fine 3))
+    (should (null (media-thumbnail--split-seek "5")))
+    (should (null (media-thumbnail--split-seek "10")))
+    (should (equal (media-thumbnail--split-seek "60") '("57.000" . "3")))
+    (should (equal (media-thumbnail--split-seek "1800") '("1797.000" . "3")))
+    ;; MM:SS or garbage must not attempt to split.
+    (should (null (media-thumbnail--split-seek "1:30")))
+    (should (null (media-thumbnail--split-seek nil)))))
+
+(ert-deftest media-thumbnail-test-frame-cmd-emits-split-seek ()
+  "Generated ffmpeg command must place a coarse `-ss' BEFORE `-i'
+when the seek is past the threshold, and only the fine `-ss' AFTER
+`-i'.  Verifies both flags appear in the expected order."
+  (let ((cmd (media-thumbnail-ffmpeg-frame-cmd
+              "/tmp/a.mp4" "/tmp/a.jpg" :size 0 :seek-time "300")))
+    (should (string-match-p "-ss 297\\.000 -i " cmd))
+    (should (string-match-p "-i /tmp/a\\.mp4 -ss 3 " cmd))))
+
+(ert-deftest media-thumbnail-test-frame-cmd-plain-seek-below-threshold ()
+  "Sub-threshold seeks must NOT emit a pre-input `-ss'; the accurate
+seek stays a single post-input `-ss'."
+  (let ((cmd (media-thumbnail-ffmpeg-frame-cmd
+              "/tmp/a.mp4" "/tmp/a.jpg" :size 0 :seek-time "5")))
+    (should-not (string-match-p "-ss 5 -i " cmd))
+    (should (string-match-p "-i /tmp/a\\.mp4 -ss 5 " cmd))))
+
 ;;; End of test file.
 (provide 'media-thumbnail-test)
 ;;; media-thumbnail-test.el ends here
